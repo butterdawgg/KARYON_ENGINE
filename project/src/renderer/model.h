@@ -10,9 +10,14 @@ namespace krn
     {
         static void Register()
         {
-            SerializeManager::RegisterComponent<ModelDesc>("model");
+            SerializeManager::RegisterComponent<ModelDesc>("model")
+                .Parameter("gltf_file_name", &ModelDesc::gltfFileName)
+                .Parameter("gltf_mesh_name", &ModelDesc::gtlfMeshName)
+                .Parameter("gltf_material_name", &ModelDesc::gtlfMaterialName)
+                .Parameter("material_desc", &ModelDesc::materialDesc);
         }
 
+        std::string gltfFileName { };
         std::string gtlfMeshName { };
         std::string gtlfMaterialName { };
 
@@ -151,11 +156,10 @@ namespace krn
         }
     };
 
-    // Draws a mesh with a metallic-roughness PBR material
     struct Model
     {
         MeshHandle meshHandle { INVALID_MESH };
-        MaterialHandle materialHandle { INVALID_MATERIAL };
+        bool forceRenderingOff { false };
     };
 }
 

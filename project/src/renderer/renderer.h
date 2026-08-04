@@ -33,6 +33,8 @@ namespace krn
     {
         bgfx::VertexBufferHandle vbh { bgfx::kInvalidHandle };
         bgfx::IndexBufferHandle ibh { bgfx::kInvalidHandle };
+        std::vector<size_t> primitives { };
+        std::vector<size_t> materials { };
     };
 
     struct MaterialGPU
@@ -47,45 +49,41 @@ namespace krn
         bgfx::TextureHandle emissiveTex { bgfx::kInvalidHandle };
     };
 
-    // Every GPU resource one loaded scene's meshes/materials own. The
-    // Renderer keeps one of these per currently-loaded scene, keyed by
-    // GPU_ResourcesHandle (see gpu_resources_handle.h) so multiple scenes can
-    // be loaded at once; MeshHandle/MaterialHandle index within a single
-    // scene's own GPU_Resources, not across scenes.
+    // Every GPU resource one loaded scene's meshes/materials own
     struct GPU_Resources
     {
         std::vector<MeshGPU> meshes;
         std::vector<MaterialGPU> materials;
 
-        // Deduplicated by resolved path so materials in this scene sharing a
-        // texture file don't load/upload it twice
+        // Deduplicated by resolved path
         std::unordered_map<std::string, bgfx::TextureHandle> textureCache;
     };
 
     // Output of loading a gltf scene file
     struct GLTF_LoadResult
     {
-        // { mesh name, cpu mesh data }
-        std::unordered_map<std::string, MeshDesc> meshes { };
+        std::vector<MeshDesc> meshes { };
+        std::vector<MaterialDesc> materials { };
 
-        // { material name, cpu material data }
-        std::unordered_map<std::string, MaterialDesc> materials { };
+        std::unordered_map<std::string, size_t> nameToMeshId { };
+        std::unordered_map<std::string, size_t> nameToMaterialId { };
 
         struct Node
         {
-            std::vector<Node> childNodes;
+            size_t parentNodeId;
+            std::vector<size_t> childNodeIds;
 
             glm::vec3 position { };
             glm::quat rotation { };
             glm::vec3 scale { 1.0f, 1.0f, 1.0f };
 
-            std::string meshName { };
-            std::string materialName { };
+            size_t meshName { };
+            size_t materialName { };
         };
 
-        std::vector<Node> rootNodes { };
+        std::vector<Node> nodes { };
 
-        std::unordered_map<std::string, Node&> nodeMap;
+        std::unordered_map<std::string, size_t> nameToNodeId;
     };
 
     // Forward PBR renderer: one directional light, up to MAX_POINT_LIGHTS
@@ -117,9 +115,10 @@ namespace krn
 
         // Scene-scoped: valid only for the GPU_ResourcesHandle of a
         // currently loaded scene (see Scene::GetResourcesHandle()); freed
-        // when that scene unloads.
+        // when that scene unloads. Geometry only - CreateMesh doesn't know
+        // or care about materials; pair its MeshHandle with a
+        // MaterialListHandle from CreateMaterialList to get a Model.
         MeshHandle CreateMesh(GPU_ResourcesHandle handle, const MeshDesc& data);
-        MaterialHandle CreateMaterial(GPU_ResourcesHandle handle, const MaterialDesc& desc);
 
         private:
 
@@ -152,13 +151,16 @@ namespace krn
         bool IsHandleValid(GPU_ResourcesHandle handle) const;
         GPU_Resources& GetSceneResources(GPU_ResourcesHandle handle);
 
-        bgfx::TextureHandle LoadTexture(GPU_Resources& resources, const fs::path& path);
+        bgfx::TextureHandle LoadTexture(GPU_Resources& resources, const fs::path& path) const;
         static bgfx::TextureHandle CreateSolidTexture(std::uint8_t r, std::uint8_t g, std::uint8_t b, std::uint8_t a);
 
         MeshHandle UploadMesh(GPU_Resources& resources, const MeshDesc& data);
 
+        // Builds one MaterialGPU and appends its index to `resources.materials`
+        std::uint32_t UploadMaterial(GPU_Resources& resources, const MaterialDesc& desc);
+
         // Binds a material's textures/uniforms for the next bgfx::submit()
-        void BindMaterial(const GPU_Resources& resources, MaterialHandle handle) const;
+        void BindMaterial(const GPU_Resources& resources, std::uint32_t materialIndex) const;
 
         std::optional<GLTF_LoadResult> LoadGLTF(const std::vector<fs::path>& files);
 

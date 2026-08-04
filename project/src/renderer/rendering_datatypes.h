@@ -4,12 +4,8 @@
 namespace krn
 {
     using MeshHandle = std::uint32_t;
-    using MaterialHandle = std::uint32_t;
-
     inline constexpr MeshHandle INVALID_MESH { static_cast<MeshHandle>(-1) };
-    inline constexpr MaterialHandle INVALID_MATERIAL { static_cast<MaterialHandle>(-1) };
 
-    // CPU-side data
     struct Vertex
     {
         glm::vec3 position;
@@ -18,10 +14,13 @@ namespace krn
         glm::vec2 uv;
     };
 
+    // CPU-side data
     struct MeshDesc
     {
         std::vector<Vertex> vertices;
         std::vector<std::uint32_t> indices;
+        std::vector<size_t> primitives { };
+        std::vector<size_t> materials { };
     };
 
     struct MaterialDesc

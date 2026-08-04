@@ -40,4 +40,6 @@
 # folders
 .vs
 build
+
+# compiled bgfx shaders
 *.sc.bin

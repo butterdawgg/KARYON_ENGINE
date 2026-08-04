@@ -262,27 +262,46 @@ namespace krn
 
         for (auto& model : models)
         {
-            const Entity e { entities[i++] };
+            const Entity entity { entities[i++] };
 
-            if (model.meshHandle == INVALID_MESH || model.materialHandle == INVALID_MATERIAL)
+            if (model.meshHandle == INVALID_MESH)
                 continue;
-
-            ctx.transforms.Ensure(reg, e);
-
-            const glm::mat4 worldMat { reg.Get<Transform>(e).GetWorldMatrix() };
-
-            bgfx::setTransform(glm::value_ptr(worldMat));
 
             const MeshGPU& mesh { resources.meshes[model.meshHandle] };
 
-            bgfx::setVertexBuffer(0, mesh.vbh);
-            bgfx::setIndexBuffer(mesh.ibh);
+            ctx.transforms.Ensure(reg, entity);
 
-            BindMaterial(resources, model.materialHandle);
+            const glm::mat4 worldMat { reg.Get<Transform>(entity).GetWorldMatrix() };
 
-            bgfx::setState(STATE);
+            for (size_t start = 0, primitiveId = 0; primitiveId < mesh.primitives.size(); ++primitiveId)
+            {
+                if (primitiveId >= mesh.materials.size())
+                {
+                    logWarning("Model on entity {} is missing a material for primitive {}, skipping",
+                        entity, primitiveId);
 
-            bgfx::submit(0, m_PBRProgram);
+                    continue;
+                }
+
+                const size_t count { mesh.primitives[primitiveId] };
+                const std::uint32_t matId { mesh.materials[primitiveId] };
+
+                // Transform/buffers/state only apply to the next submit() -
+                // bgfx resets them after each one, so they're re-set per
+                // primitive rather than once per model.
+                bgfx::setTransform(glm::value_ptr(worldMat));
+
+                bgfx::setVertexBuffer(0, mesh.vbh);
+                bgfx::setIndexBuffer(mesh.ibh, start, count);
+
+                BindMaterial(resources, matId);
+
+                bgfx::setState(STATE);
+
+                bgfx::submit(0, m_PBRProgram);
+
+                start += count;
+            }
         }
 
         bgfx::frame();
@@ -293,10 +312,8 @@ namespace krn
         return UploadMesh(GetSceneResources(handle), data);
     }
 
-    MaterialHandle Renderer::CreateMaterial(GPU_ResourcesHandle handle, const MaterialDesc& desc)
+    std::uint32_t Renderer::UploadMaterial(GPU_Resources& resources, const MaterialDesc& desc)
     {
-        GPU_Resources& resources { GetSceneResources(handle) };
-
         MaterialGPU material;
         material.albedo = glm::vec4(desc.albedo, 1.0f);
         material.metallicRoughness = glm::vec4(desc.metallic, desc.roughness, 0.0f, 0.0f);
@@ -314,16 +331,17 @@ namespace krn
         material.emissiveTex = desc.emissiveTexture.empty()
             ? m_DefaultEmissive : LoadTexture(resources, m_DataPath / desc.emissiveTexture);
 
-        const MaterialHandle materialHandle { static_cast<MaterialHandle>(resources.materials.size()) };
+        const std::uint32_t materialIndex { static_cast<std::uint32_t>(resources.materials.size()) };
         resources.materials.push_back(material);
 
-        return materialHandle;
+        return materialIndex;
     }
 
     void Renderer::OnLoadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path> resToLoad)
     {
         // TODO: load gltf files, create entities and give them each a Model, Transform,
         // LoadMetadata (with correct parent id that TransformManager will process later)
+        // Processs ModelDesc components afterwards
 
         // Create handle and give it to the scene
         const GPU_ResourcesHandle handle { CreateSceneResources() };
@@ -529,15 +547,29 @@ namespace krn
         mesh.vbh = bgfx::createVertexBuffer(vertexMem, LAYOUT);
         mesh.ibh = bgfx::createIndexBuffer(indexMem, BGFX_BUFFER_INDEX32);
 
-        const MeshHandle handle { static_cast<MeshHandle>(resources.meshes.size()) };
-        resources.meshes.push_back(mesh);
+        if (data.primitives.empty())
+        {
+            // No submesh info given - treat the whole buffer as one
+            // primitive; caller must set Model::materialsHandle to draw it
+            mesh.primitives.push_back(data.vertices.size());
+        }
+        else
+        {
+            mesh.primitives = data.primitives;
+        }
 
-        return handle;
+        // TODO: set mesh.materials
+
+        const MeshHandle meshHandle { static_cast<MeshHandle>(resources.meshes.size()) };
+        resources.meshes.push_back(std::move(mesh));
+
+        return meshHandle;
     }
 
-    void Renderer::BindMaterial(const GPU_Resources& resources, MaterialHandle handle) const
+
+    void Renderer::BindMaterial(const GPU_Resources& resources, std::uint32_t materialIndex) const
     {
-        const MaterialGPU& material { resources.materials[handle] };
+        const MaterialGPU& material { resources.materials[materialIndex] };
 
         bgfx::setUniform(u_baseColorFactor, &material.albedo);
         bgfx::setUniform(u_metallicRoughnessFactor, &material.metallicRoughness);
@@ -549,7 +581,7 @@ namespace krn
         bgfx::setTexture(3, s_emissive, material.emissiveTex);
     }
 
-    bgfx::TextureHandle Renderer::LoadTexture(GPU_Resources& resources, const fs::path& path)
+    bgfx::TextureHandle Renderer::LoadTexture(GPU_Resources& resources, const fs::path& path) const
     {
         const std::string key { path.string() };
 
