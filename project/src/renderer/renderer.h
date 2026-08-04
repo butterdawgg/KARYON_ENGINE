@@ -62,28 +62,34 @@ namespace krn
     // Output of loading a gltf scene file
     struct GLTF_LoadResult
     {
-        std::vector<MeshDesc> meshes { };
-        std::vector<MaterialDesc> materials { };
-
-        std::unordered_map<std::string, size_t> nameToMeshId { };
-        std::unordered_map<std::string, size_t> nameToMaterialId { };
-
-        struct Node
+        struct Data
         {
-            size_t parentNodeId;
-            std::vector<size_t> childNodeIds;
+            std::vector<MeshDesc> meshes { };
+            std::vector<MaterialDesc> materials { };
 
-            glm::vec3 position { };
-            glm::quat rotation { };
-            glm::vec3 scale { 1.0f, 1.0f, 1.0f };
+            std::unordered_map<std::string, size_t> nameToMeshId { };
+            std::unordered_map<std::string, size_t> nameToMaterialId { };
 
-            size_t meshName { };
-            size_t materialName { };
+            struct Node
+            {
+                size_t parentNodeId;
+                std::vector<size_t> childNodeIds;
+
+                glm::vec3 position { };
+                glm::quat rotation { };
+                glm::vec3 scale { 1.0f, 1.0f, 1.0f };
+
+                size_t meshName { };
+                size_t materialName { };
+            };
+
+            std::vector<Node> nodes { };
+
+            std::unordered_map<std::string, size_t> nameToNodeId;
         };
 
-        std::vector<Node> nodes { };
-
-        std::unordered_map<std::string, size_t> nameToNodeId;
+        std::vector<Data> datas;
+        std::unordered_map<fs::path, size_t> filepathToDataId;
     };
 
     // Forward PBR renderer: one directional light, up to MAX_POINT_LIGHTS
@@ -125,7 +131,7 @@ namespace krn
         // ----------------------------
 
         // Called by the SceneManager on scene load
-        void OnLoadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path> resToLoad);
+        void OnLoadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path>& resToLoad);
 
         // Called by the SceneManager on scene unload
         void OnUnloadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg);
@@ -177,9 +183,11 @@ namespace krn
         // --- GLTF loading ---
         // --------------------
 
+        // Loads scene data from a .gltf/.glb file, returns { filename, loaded data }
         std::optional<GLTF_LoadResult> LoadGLTF(const std::vector<fs::path>& files);
 
-
+        // Processes a GLTF_LoadResult
+        void ProcessGLTF(GLTF_LoadResult& result);
 
         // ---------------
         // --- Members ---

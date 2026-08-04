@@ -12,7 +12,7 @@ namespace krn
     {
         // Add OnLoad callback
         scenes.AddInternalLoadCallback(
-            [this] (const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path>)
+            [this] (const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path>&)
             {
                 OnLoadCallback(ctx, scene, reg);
             });

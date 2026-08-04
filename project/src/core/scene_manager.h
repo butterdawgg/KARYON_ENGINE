@@ -19,6 +19,7 @@ namespace krn
     class Scene final
     {
         friend class SceneManager;
+        friend class Renderer;
 
         public:
 
@@ -32,11 +33,12 @@ namespace krn
         Registry& GetReg() { return m_Registry; }
 
         GPU_ResourcesHandle GetResourcesHandle() const { return m_ResourcesHandle; }
-        void SetResourcesHandle(GPU_ResourcesHandle handle) { m_ResourcesHandle = handle; }
 
         private:
 
         Scene() = default;
+
+        void SetResourcesHandle(GPU_ResourcesHandle handle) { m_ResourcesHandle = handle; }
 
         Registry m_Registry { };
         bool m_ScheduledToUnload { false };

@@ -19,11 +19,16 @@
 
 #include <stdexcept>
 
+#include <ranges>
+
 #include "utils.h"
 
 namespace krn
 {
-    // Private helpers
+    // -----------------------
+    // --- Private helpers ---
+    // -----------------------
+
     namespace
     {
         std::vector<std::uint8_t> ReadFile(const fs::path& path)
@@ -143,16 +148,11 @@ namespace krn
         // bgfx::init() gets a chance to run).
         InitPermanentResources(dataPath / "shaders" / "bin");
 
-        u_camPos = bgfx::createUniform("u_camPos", bgfx::UniformType::Vec4);
-        u_ambientColor = bgfx::createUniform("u_ambientColor", bgfx::UniformType::Vec4);
-        u_dirLightDir = bgfx::createUniform("u_dirLightDir", bgfx::UniformType::Vec4);
-        u_dirLightColor = bgfx::createUniform("u_dirLightColor", bgfx::UniformType::Vec4);
-        u_pointLightPos = bgfx::createUniform("u_pointLightPos", bgfx::UniformType::Vec4, MAX_POINT_LIGHTS);
-        u_pointLightColor = bgfx::createUniform("u_pointLightColor", bgfx::UniformType::Vec4, MAX_POINT_LIGHTS);
-
+        // Create uniforms
+        
         // Add OnLoad/OnUnload callbacks
         scenes.AddInternalLoadCallback(
-            [this] (const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path> resToLoad)
+            [this] (const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path>& resToLoad)
             {
                 OnLoadCallback(ctx, scene, reg, resToLoad);
             });
@@ -356,13 +356,17 @@ namespace krn
     // --- Resource management ---
     // ---------------------------
 
-    void Renderer::OnLoadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path> resToLoad)
+    void Renderer::OnLoadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path>& resToLoad)
     {
         // TODO: load gltf files, create entities and give them each a Model, Transform,
         // LoadMetadata (with correct parent id that TransformManager will process later)
         // Processs ModelDesc components afterwards
 
-        // Create handle and give it to the scene
+        
+
+        auto gltfData { LoadGLTF(resToLoad) };
+
+        // Create resources handle and give it to the scene
         const GPU_ResourcesHandle handle { CreateSceneResources() };
         scene.SetResourcesHandle(handle);
 
@@ -406,6 +410,13 @@ namespace krn
         m_DefaultNormal = CreateSolidTexture(128, 128, 255, 255); // flat tangent-space normal (0, 0, 1)
         m_DefaultMetallicRoughness = CreateSolidTexture(255, 255, 255, 255); // G = roughness, B = metallic
         m_DefaultEmissive = CreateSolidTexture(255, 255, 255, 255);
+
+        u_camPos = bgfx::createUniform("u_camPos", bgfx::UniformType::Vec4);
+        u_ambientColor = bgfx::createUniform("u_ambientColor", bgfx::UniformType::Vec4);
+        u_dirLightDir = bgfx::createUniform("u_dirLightDir", bgfx::UniformType::Vec4);
+        u_dirLightColor = bgfx::createUniform("u_dirLightColor", bgfx::UniformType::Vec4);
+        u_pointLightPos = bgfx::createUniform("u_pointLightPos", bgfx::UniformType::Vec4, MAX_POINT_LIGHTS);
+        u_pointLightColor = bgfx::createUniform("u_pointLightColor", bgfx::UniformType::Vec4, MAX_POINT_LIGHTS);
     }
 
     GPU_ResourcesHandle Renderer::CreateSceneResources()
@@ -671,13 +682,18 @@ namespace krn
 
     std::optional<GLTF_LoadResult> Renderer::LoadGLTF(const std::vector<fs::path>& files)
     {
+        GLTF_LoadResult result { };
+
         for (auto& path : files)
         {
+            if (path.extension() != ".gltf" && path.extension() != ".glb")
+                continue;
+
             if (!std::filesystem::exists(path))
             {
                 logError("Resource load failed: can't find '{}' .gltf/.glb file", path.string());
 
-                return std::nullopt;
+                continue;
             }
 
             static constexpr auto supportedExtensions =
@@ -697,10 +713,10 @@ namespace krn
             auto gltfFile = fastgltf::MappedGltfFile::FromPath(path);
             if (!bool(gltfFile))
             {
-                logError("Resource load failed: can't opent gltf file: {}",
+                logError("Resource load failed: can't open gltf file: {}",
                     fastgltf::getErrorMessage(gltfFile.error()));
 
-                return std::nullopt;
+                continue;
             }
 
             auto asset = parser.loadGltf(gltfFile.get(), path.parent_path(), gltfOptions);
@@ -709,8 +725,17 @@ namespace krn
                 logError("Resource load failed: can't load gltf file: {}",
                     fastgltf::getErrorMessage(asset.error()));
 
-                return std::nullopt;
+                continue;
             }
+
+            // TODO: load all data
         }
+
+        return result.datas.empty() ? std::nullopt : std::optional<GLTF_LoadResult>(result);
+    }
+
+    void Renderer::ProcessGLTF(GLTF_LoadResult& result)
+    {
+
     }
 }
