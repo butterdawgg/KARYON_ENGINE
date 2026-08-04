@@ -289,7 +289,7 @@ namespace krn
         {
             const Entity entity { entities[i++] };
 
-            if (model.meshHandle == INVALID_MESH)
+            if (model.meshHandle == INVALID_MESH || model.forceRenderingOff)
                 continue;
 
             const MeshGPU& mesh { resources.meshes[model.meshHandle] };
@@ -336,7 +336,7 @@ namespace krn
     {
         auto& res { GetSceneResources(scene.GetResourcesHandle()) };
 
-        assert(handle >= res.meshes.size() && "tried to access invalid mesh handle");
+        assert(handle < res.meshes.size() && "tried to access invalid mesh handle");
 
         return res.meshes[handle];
     }
@@ -345,7 +345,7 @@ namespace krn
     {
         auto& res { GetSceneResources(scene.GetResourcesHandle()) };
 
-        assert(id >= res.materials.size() && "tried to access invalid material by id");
+        assert(id < res.materials.size() && "tried to access invalid material by id");
 
         return res.materials[id];
     }
