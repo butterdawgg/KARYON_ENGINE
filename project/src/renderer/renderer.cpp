@@ -608,7 +608,7 @@ namespace krn
         {
             if (!std::filesystem::exists(path))
             {
-                logError("Resource load failed: can't find '{}' .gltf/.glb file", path);
+                logError("Resource load failed: can't find '{}' .gltf/.glb file", path.string());
 
                 return std::nullopt;
             }
