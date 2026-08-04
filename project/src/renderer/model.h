@@ -21,16 +21,16 @@ namespace krn
         std::string gtlfMeshName { };
         std::string gtlfMaterialName { };
 
-        std::optional<MaterialDesc> materialDesc { };
+        std::vector<MaterialDesc> materialDesc { };
     };
 
+    // Materials are separated by '|', fields within one material by ';'
+    // (e.g. "albedo: 1 0 0; roughness: 0.5 | albedo: 0 1 0; metallic: 1")
     template<>
-    struct ParseValue<std::optional<MaterialDesc>>
+    struct ParseValue<std::vector<MaterialDesc>>
     {
-        static std::optional<MaterialDesc> Parse(const std::string& value)
+        static std::vector<MaterialDesc> Parse(const std::string& value)
         {
-            MaterialDesc desc {};
-
             auto trim = [] (std::string_view str) -> std::string_view
                 {
                     constexpr char whitespace[] = " \t\r\n";
@@ -65,94 +65,124 @@ namespace krn
                     return std::nullopt;
                 };
 
-            const std::unordered_map<std::string_view, std::function<bool(std::string_view)>> parsers =
-            {
-                { "albedo", [&] (std::string_view s)
-                    {
-                        auto v = parseVec3(s);
-                        if (!v) return false;
-                        desc.albedo = *v;
-                        return true;
-                    }
-                },
-                { "metallic", [&] (std::string_view s)
-                    {
-                        auto v = parseFloat(s);
-                        if (!v) return false;
-                        desc.metallic = *v;
-                        return true;
-                    }
-                },
-                { "roughness", [&] (std::string_view s)
-                    {
-                        auto v = parseFloat(s);
-                        if (!v) return false;
-                        desc.roughness = *v;
-                        return true;
-                    }
-                },
-                { "emissive", [&] (std::string_view s)
-                    {
-                        auto v = parseVec3(s);
-                        if (!v) return false;
-                        desc.emissive = *v;
-                        return true;
-                    }
-                },
-                { "albedoTexture", [&] (std::string_view s)
-                    {
-                        desc.albedoTexture = trim(s);
-                        return true;
-                    }
-                },
-                { "normalTexture", [&] (std::string_view s)
-                    {
-                        desc.normalTexture = trim(s);
-                        return true;
-                    }
-                },
-                { "metallicRoughnessTexture", [&] (std::string_view s)
-                    {
-                        desc.metallicRoughnessTexture = trim(s);
-                        return true;
-                    }
-                },
-                { "emissiveTexture", [&] (std::string_view s)
-                    {
-                        desc.emissiveTexture = trim(s);
-                        return true;
-                    }
-                }
-            };
+            auto parseOne = [&] (std::string_view chunk) -> std::optional<MaterialDesc>
+                {
+                    MaterialDesc desc {};
 
+                    const std::unordered_map<std::string_view, std::function<bool(std::string_view)>> parsers =
+                    {
+                        { "albedo", [&] (std::string_view s)
+                            {
+                                auto v = parseVec3(s);
+                                if (!v) return false;
+                                desc.albedo = *v;
+                                return true;
+                            }
+                        },
+                        { "metallic", [&] (std::string_view s)
+                            {
+                                auto v = parseFloat(s);
+                                if (!v) return false;
+                                desc.metallic = *v;
+                                return true;
+                            }
+                        },
+                        { "roughness", [&] (std::string_view s)
+                            {
+                                auto v = parseFloat(s);
+                                if (!v) return false;
+                                desc.roughness = *v;
+                                return true;
+                            }
+                        },
+                        { "emissive", [&] (std::string_view s)
+                            {
+                                auto v = parseVec3(s);
+                                if (!v) return false;
+                                desc.emissive = *v;
+                                return true;
+                            }
+                        },
+                        { "albedoTexture", [&] (std::string_view s)
+                            {
+                                desc.albedoTexture = trim(s);
+                                return true;
+                            }
+                        },
+                        { "normalTexture", [&] (std::string_view s)
+                            {
+                                desc.normalTexture = trim(s);
+                                return true;
+                            }
+                        },
+                        { "metallicRoughnessTexture", [&] (std::string_view s)
+                            {
+                                desc.metallicRoughnessTexture = trim(s);
+                                return true;
+                            }
+                        },
+                        { "emissiveTexture", [&] (std::string_view s)
+                            {
+                                desc.emissiveTexture = trim(s);
+                                return true;
+                            }
+                        }
+                    };
+
+                    std::string_view input = chunk;
+
+                    while (!input.empty())
+                    {
+                        const auto semicolon = input.find(';');
+                        const auto line = trim(input.substr(0, semicolon));
+
+                        if (!line.empty())
+                        {
+                            const auto colon = line.find(':');
+                            if (colon == std::string_view::npos)
+                                return std::nullopt;
+
+                            const auto key = trim(line.substr(0, colon));
+                            const auto val = trim(line.substr(colon + 1));
+
+                            const auto it = parsers.find(key);
+                            if (it == parsers.end() || !it->second(val))
+                                return std::nullopt;
+                        }
+
+                        if (semicolon == std::string_view::npos)
+                            break;
+
+                        input.remove_prefix(semicolon + 1);
+                    }
+
+                    return desc;
+                };
+
+            std::vector<MaterialDesc> result;
             std::string_view input = value;
 
             while (!input.empty())
             {
-                const auto semicolon = input.find(';');
-                const auto line = trim(input.substr(0, semicolon));
+                const auto pipe = input.find('|');
+                const auto chunk = trim(input.substr(0, pipe));
 
-                if (!line.empty())
+                if (!chunk.empty())
                 {
-                    const auto colon = line.find(':');
-                    if (colon == std::string_view::npos)
-                        return std::nullopt;
+                    auto desc = parseOne(chunk);
+                    if (!desc)
+                        return { };
 
-                    const auto key = trim(line.substr(0, colon));
-                    const auto val = trim(line.substr(colon + 1));
-
-                    const auto it = parsers.find(key);
-                    if (it == parsers.end() || !it->second(val))
-                        return std::nullopt;
+                    result.push_back(std::move(*desc));
                 }
 
-                if (semicolon == std::string_view::npos)
+                if (pipe == std::string_view::npos)
                     break;
 
-                input.remove_prefix(semicolon + 1);
+                input.remove_prefix(pipe + 1);
             }
 
-            return desc;
+            return result;
         }
     };
 

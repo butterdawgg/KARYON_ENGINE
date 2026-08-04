@@ -20,7 +20,7 @@ namespace krn
         std::vector<Vertex> vertices;
         std::vector<std::uint32_t> indices;
         std::vector<size_t> primitives { };
-        std::vector<size_t> materials { };
+        std::vector<std::uint32_t> materials { };
     };
 
     struct MaterialDesc

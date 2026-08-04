@@ -88,15 +88,28 @@ namespace krn
             }
 
             bgfx::ShaderHandle handle { bgfx::createShader(bgfx::copy(data.data(),
-                static_cast<std::uint32_t>(data.size()))) };
+                static_cast<uint32_t>(data.size()))) };
 
             bgfx::setName(handle, name);
 
             return handle;
         }
+
+        // Creates a single color 1x1 texture
+        bgfx::TextureHandle CreateSolidTexture(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+        {
+            const std::uint8_t pixel[4] { r, g, b, a };
+
+            return bgfx::createTexture2D(1, 1, false, 1, bgfx::TextureFormat::RGBA8,
+                BGFX_SAMPLER_NONE, bgfx::copy(pixel, sizeof(pixel)));
+        }
     }
 
 
+
+    // ----------------------
+    // --- Initialization ---
+    // ----------------------
 
     Renderer::Renderer(Window& window, SceneManager& scenes, const fs::path& dataPath) :
         m_DataPath(dataPath),
@@ -151,6 +164,12 @@ namespace krn
             });
     }
 
+
+
+    // ---------------
+    // --- Cleanup ---
+    // ---------------
+
     Renderer::~Renderer()
     {
         bgfx::destroy(u_camPos);
@@ -161,7 +180,7 @@ namespace krn
         bgfx::destroy(u_pointLightColor);
 
         // Release every scene's GPU resources while bgfx is still up
-        for (std::uint32_t i = 0; i < m_SceneResources.size(); ++i)
+        for (uint32_t i = 0; i < m_SceneResources.size(); ++i)
         {
             const bool isFree { std::find(m_FreeSlots.begin(), m_FreeSlots.end(), i) != m_FreeSlots.end() };
 
@@ -189,6 +208,12 @@ namespace krn
 
         bgfx::shutdown();
     }
+
+
+
+    // ------------------------
+    // --- Public interface ---
+    // ------------------------
 
     void Renderer::DrawEmptyFrame()
     {
@@ -284,7 +309,7 @@ namespace krn
                 }
 
                 const size_t count { mesh.primitives[primitiveId] };
-                const std::uint32_t matId { mesh.materials[primitiveId] };
+                const uint32_t matId { mesh.materials[primitiveId] };
 
                 // Transform/buffers/state only apply to the next submit() -
                 // bgfx resets them after each one, so they're re-set per
@@ -307,12 +332,177 @@ namespace krn
         bgfx::frame();
     }
 
-    MeshHandle Renderer::CreateMesh(GPU_ResourcesHandle handle, const MeshDesc& data)
+    MeshGPU& Renderer::GetMesh(Scene& scene, MeshHandle handle)
     {
-        return UploadMesh(GetSceneResources(handle), data);
+        auto& res { GetSceneResources(scene.GetResourcesHandle()) };
+
+        assert(handle >= res.meshes.size() && "tried to access invalid mesh handle");
+
+        return res.meshes[handle];
     }
 
-    std::uint32_t Renderer::UploadMaterial(GPU_Resources& resources, const MaterialDesc& desc)
+    MaterialGPU& Renderer::GetMaterial(Scene& scene, uint32_t id)
+    {
+        auto& res { GetSceneResources(scene.GetResourcesHandle()) };
+
+        assert(id >= res.materials.size() && "tried to access invalid material by id");
+
+        return res.materials[id];
+    }
+
+
+
+    // ---------------------------
+    // --- Resource management ---
+    // ---------------------------
+
+    void Renderer::OnLoadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path> resToLoad)
+    {
+        // TODO: load gltf files, create entities and give them each a Model, Transform,
+        // LoadMetadata (with correct parent id that TransformManager will process later)
+        // Processs ModelDesc components afterwards
+
+        // Create handle and give it to the scene
+        const GPU_ResourcesHandle handle { CreateSceneResources() };
+        scene.SetResourcesHandle(handle);
+
+        GPU_Resources& res { GetSceneResources(handle) };
+
+        // TODO: for each ModelDesc, resolve gltfFileName/gtlfMeshName into a
+        // MeshDesc (via LoadGLTF), UploadMaterial() each entry in
+        // materialDesc into res, fill the resulting MeshDesc::materials with
+        // those indices, then CreateMesh(handle, meshDesc) and store the
+        // returned MeshHandle on that entity's Model.
+    }
+
+    void Renderer::OnUnloadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg)
+    {
+        DestroySceneResources(scene.GetResourcesHandle());
+
+        scene.SetResourcesHandle(GPU_ResourcesHandle { });
+    }
+
+    void Renderer::InitPermanentResources(const fs::path& shaderDir)
+    {
+        const bgfx::ShaderHandle vsh { LoadShader(shaderDir, "vs_pbr") };
+        const bgfx::ShaderHandle fsh { LoadShader(shaderDir, "fs_pbr") };
+
+        m_PBRProgram = bgfx::createProgram(vsh, fsh, true);
+
+        u_baseColorFactor = bgfx::createUniform("u_baseColorFactor", bgfx::UniformType::Vec4);
+        u_metallicRoughnessFactor = bgfx::createUniform("u_metallicRoughnessFactor", bgfx::UniformType::Vec4);
+        u_emissiveFactor = bgfx::createUniform("u_emissiveFactor", bgfx::UniformType::Vec4);
+
+        s_albedo = bgfx::createUniform("s_albedo", bgfx::UniformType::Sampler);
+        s_normal = bgfx::createUniform("s_normal", bgfx::UniformType::Sampler);
+        s_metallicRoughness = bgfx::createUniform("s_metallicRoughness", bgfx::UniformType::Sampler);
+        s_emissive = bgfx::createUniform("s_emissive", bgfx::UniformType::Sampler);
+
+        // Multiplicative identity for anything combined with a *Factor uniform
+        // in the shader (albedo/emissive: rgb * texture; metallic/roughness:
+        // factor * texture channel), so an unset texture leaves the factor
+        // value unchanged rather than zeroing it out.
+        m_DefaultAlbedo = CreateSolidTexture(255, 255, 255, 255);
+        m_DefaultNormal = CreateSolidTexture(128, 128, 255, 255); // flat tangent-space normal (0, 0, 1)
+        m_DefaultMetallicRoughness = CreateSolidTexture(255, 255, 255, 255); // G = roughness, B = metallic
+        m_DefaultEmissive = CreateSolidTexture(255, 255, 255, 255);
+    }
+
+    GPU_ResourcesHandle Renderer::CreateSceneResources()
+    {
+        uint32_t index;
+
+        if (!m_FreeSlots.empty())
+        {
+            index = m_FreeSlots.back();
+            m_FreeSlots.pop_back();
+        }
+        else
+        {
+            index = static_cast<uint32_t>(m_SceneResources.size());
+            m_SceneResources.emplace_back();
+            m_Generations.push_back(0);
+        }
+
+        return GPU_ResourcesHandle { index, m_Generations[index] };
+    }
+
+    void Renderer::DestroySceneResources(GPU_ResourcesHandle handle)
+    {
+        if (!IsHandleValid(handle))
+        {
+            assert(false && "Renderer::DestroySceneResources called with an invalid or stale handle");
+
+            return;
+        }
+
+        GPU_Resources& resources { m_SceneResources[handle.index] };
+
+        for (MeshGPU& mesh : resources.meshes)
+        {
+            bgfx::destroy(mesh.vbh);
+            bgfx::destroy(mesh.ibh);
+        }
+
+        for (auto& [path, texHandle] : resources.textureCache)
+        {
+            bgfx::destroy(texHandle);
+        }
+
+        resources = GPU_Resources { };
+
+        ++m_Generations[handle.index];
+        m_FreeSlots.push_back(handle.index);
+    }
+
+    bool Renderer::IsHandleValid(GPU_ResourcesHandle handle) const
+    {
+        return handle.IsValid()
+            && handle.index < m_SceneResources.size()
+            && m_Generations[handle.index] == handle.generation;
+    }
+
+    GPU_Resources& Renderer::GetSceneResources(GPU_ResourcesHandle handle)
+    {
+        assert(IsHandleValid(handle) && "invalid or stale GPU_ResourcesHandle");
+
+        return m_SceneResources[handle.index];
+    }
+
+    MeshHandle Renderer::UploadMesh(GPU_Resources& resources, const MeshDesc& data)
+    {
+        static const bgfx::VertexLayout LAYOUT { MakeVertexLayout() };
+
+        const bgfx::Memory* vertexMem { bgfx::copy(data.vertices.data(),
+            static_cast<uint32_t>(data.vertices.size() * sizeof(Vertex))) };
+
+        const bgfx::Memory* indexMem { bgfx::copy(data.indices.data(),
+            static_cast<uint32_t>(data.indices.size() * sizeof(uint32_t))) };
+
+        MeshGPU mesh;
+        mesh.vbh = bgfx::createVertexBuffer(vertexMem, LAYOUT);
+        mesh.ibh = bgfx::createIndexBuffer(indexMem, BGFX_BUFFER_INDEX32);
+
+        if (data.primitives.empty())
+        {
+            // No submesh info given - treat the whole index buffer as one
+            // primitive; caller must set data.materials[0] for it to draw
+            mesh.primitives.push_back(data.indices.size());
+        }
+        else
+        {
+            mesh.primitives = data.primitives;
+        }
+
+        mesh.materials = data.materials;
+
+        const MeshHandle meshHandle { static_cast<MeshHandle>(resources.meshes.size()) };
+        resources.meshes.push_back(std::move(mesh));
+
+        return meshHandle;
+    }
+
+    uint32_t Renderer::UploadMaterial(GPU_Resources& resources, const MaterialDesc& desc)
     {
         MaterialGPU material;
         material.albedo = glm::vec4(desc.albedo, 1.0f);
@@ -331,46 +521,17 @@ namespace krn
         material.emissiveTex = desc.emissiveTexture.empty()
             ? m_DefaultEmissive : LoadTexture(resources, m_DataPath / desc.emissiveTexture);
 
-        const std::uint32_t materialIndex { static_cast<std::uint32_t>(resources.materials.size()) };
+        const uint32_t materialIndex { static_cast<uint32_t>(resources.materials.size()) };
         resources.materials.push_back(material);
 
         return materialIndex;
     }
 
-    void Renderer::OnLoadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path> resToLoad)
-    {
-        // TODO: load gltf files, create entities and give them each a Model, Transform,
-        // LoadMetadata (with correct parent id that TransformManager will process later)
-        // Processs ModelDesc components afterwards
 
-        // Create handle and give it to the scene
-        const GPU_ResourcesHandle handle { CreateSceneResources() };
-        scene.SetResourcesHandle(handle);
 
-        GPU_Resources& res { GetSceneResources(handle) };
-
-        //for (auto& modelDesc : reg.View<ModelDesc>())
-        //{
-        //    MaterialDesc desc;
-        //    desc.albedo = modelDesc.albedo;
-        //    desc.metallic = modelDesc.metallic;
-        //    desc.roughness = modelDesc.roughness;
-        //    desc.emissive = modelDesc.emissive;
-        //    desc.albedoTexture = modelDesc.albedoTexture;
-        //    desc.normalTexture = modelDesc.normalTexture;
-        //    desc.metallicRoughnessTexture = modelDesc.metallicRoughnessTexture;
-        //    desc.emissiveTexture = modelDesc.emissiveTexture;
-        //
-        //    modelDesc.materialHandle = CreateMaterial(handle, desc);
-        //}
-    }
-
-    void Renderer::OnUnloadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg)
-    {
-        DestroySceneResources(scene.GetResourcesHandle());
-
-        scene.SetResourcesHandle(GPU_ResourcesHandle { });
-    }
+    // ---------------
+    // --- Helpers ---
+    // ---------------
 
     Entity Renderer::FindPrimaryCamera(Registry& reg)
     {
@@ -443,144 +604,6 @@ namespace krn
         bgfx::setUniform(u_pointLightColor, pointColor, static_cast<std::uint16_t>(MAX_POINT_LIGHTS));
     }
 
-    void Renderer::InitPermanentResources(const fs::path& shaderDir)
-    {
-        const bgfx::ShaderHandle vsh { LoadShader(shaderDir, "vs_pbr") };
-        const bgfx::ShaderHandle fsh { LoadShader(shaderDir, "fs_pbr") };
-
-        m_PBRProgram = bgfx::createProgram(vsh, fsh, true);
-
-        u_baseColorFactor = bgfx::createUniform("u_baseColorFactor", bgfx::UniformType::Vec4);
-        u_metallicRoughnessFactor = bgfx::createUniform("u_metallicRoughnessFactor", bgfx::UniformType::Vec4);
-        u_emissiveFactor = bgfx::createUniform("u_emissiveFactor", bgfx::UniformType::Vec4);
-
-        s_albedo = bgfx::createUniform("s_albedo", bgfx::UniformType::Sampler);
-        s_normal = bgfx::createUniform("s_normal", bgfx::UniformType::Sampler);
-        s_metallicRoughness = bgfx::createUniform("s_metallicRoughness", bgfx::UniformType::Sampler);
-        s_emissive = bgfx::createUniform("s_emissive", bgfx::UniformType::Sampler);
-
-        // Multiplicative identity for anything combined with a *Factor uniform
-        // in the shader (albedo/emissive: rgb * texture; metallic/roughness:
-        // factor * texture channel), so an unset texture leaves the factor
-        // value unchanged rather than zeroing it out.
-        m_DefaultAlbedo = CreateSolidTexture(255, 255, 255, 255);
-        m_DefaultNormal = CreateSolidTexture(128, 128, 255, 255); // flat tangent-space normal (0, 0, 1)
-        m_DefaultMetallicRoughness = CreateSolidTexture(255, 255, 255, 255); // G = roughness, B = metallic
-        m_DefaultEmissive = CreateSolidTexture(255, 255, 255, 255);
-    }
-
-    GPU_ResourcesHandle Renderer::CreateSceneResources()
-    {
-        std::uint32_t index;
-
-        if (!m_FreeSlots.empty())
-        {
-            index = m_FreeSlots.back();
-            m_FreeSlots.pop_back();
-        }
-        else
-        {
-            index = static_cast<std::uint32_t>(m_SceneResources.size());
-            m_SceneResources.emplace_back();
-            m_Generations.push_back(0);
-        }
-
-        return GPU_ResourcesHandle { index, m_Generations[index] };
-    }
-
-    void Renderer::DestroySceneResources(GPU_ResourcesHandle handle)
-    {
-        if (!IsHandleValid(handle))
-        {
-            assert(false && "Renderer::DestroySceneResources called with an invalid or stale handle");
-
-            return;
-        }
-
-        GPU_Resources& resources { m_SceneResources[handle.index] };
-
-        for (MeshGPU& mesh : resources.meshes)
-        {
-            bgfx::destroy(mesh.vbh);
-            bgfx::destroy(mesh.ibh);
-        }
-
-        // Textures are deduplicated by path in textureCache (multiple
-        // materials may share a handle), so destroy from there - once each -
-        // rather than from materials, which would double-destroy shared handles.
-        for (auto& [path, texHandle] : resources.textureCache)
-        {
-            bgfx::destroy(texHandle);
-        }
-
-        resources = GPU_Resources { };
-
-        ++m_Generations[handle.index];
-        m_FreeSlots.push_back(handle.index);
-    }
-
-    bool Renderer::IsHandleValid(GPU_ResourcesHandle handle) const
-    {
-        return handle.IsValid()
-            && handle.index < m_SceneResources.size()
-            && m_Generations[handle.index] == handle.generation;
-    }
-
-    GPU_Resources& Renderer::GetSceneResources(GPU_ResourcesHandle handle)
-    {
-        assert(IsHandleValid(handle) && "invalid or stale GPU_ResourcesHandle");
-
-        return m_SceneResources[handle.index];
-    }
-
-    MeshHandle Renderer::UploadMesh(GPU_Resources& resources, const MeshDesc& data)
-    {
-        static const bgfx::VertexLayout LAYOUT { MakeVertexLayout() };
-
-        const bgfx::Memory* vertexMem { bgfx::copy(data.vertices.data(),
-            static_cast<std::uint32_t>(data.vertices.size() * sizeof(Vertex))) };
-
-        const bgfx::Memory* indexMem { bgfx::copy(data.indices.data(),
-            static_cast<std::uint32_t>(data.indices.size() * sizeof(std::uint32_t))) };
-
-        MeshGPU mesh;
-        mesh.vbh = bgfx::createVertexBuffer(vertexMem, LAYOUT);
-        mesh.ibh = bgfx::createIndexBuffer(indexMem, BGFX_BUFFER_INDEX32);
-
-        if (data.primitives.empty())
-        {
-            // No submesh info given - treat the whole buffer as one
-            // primitive; caller must set Model::materialsHandle to draw it
-            mesh.primitives.push_back(data.vertices.size());
-        }
-        else
-        {
-            mesh.primitives = data.primitives;
-        }
-
-        // TODO: set mesh.materials
-
-        const MeshHandle meshHandle { static_cast<MeshHandle>(resources.meshes.size()) };
-        resources.meshes.push_back(std::move(mesh));
-
-        return meshHandle;
-    }
-
-
-    void Renderer::BindMaterial(const GPU_Resources& resources, std::uint32_t materialIndex) const
-    {
-        const MaterialGPU& material { resources.materials[materialIndex] };
-
-        bgfx::setUniform(u_baseColorFactor, &material.albedo);
-        bgfx::setUniform(u_metallicRoughnessFactor, &material.metallicRoughness);
-        bgfx::setUniform(u_emissiveFactor, &material.emissive);
-
-        bgfx::setTexture(0, s_albedo, material.albedoTex);
-        bgfx::setTexture(1, s_normal, material.normalTex);
-        bgfx::setTexture(2, s_metallicRoughness, material.metallicRoughnessTex);
-        bgfx::setTexture(3, s_emissive, material.emissiveTex);
-    }
-
     bgfx::TextureHandle Renderer::LoadTexture(GPU_Resources& resources, const fs::path& path) const
     {
         const std::string key { path.string() };
@@ -603,7 +626,7 @@ namespace krn
         bx::Error err;
 
         bimg::ImageContainer* image { bimg::imageParse(&allocator, fileData.data(),
-            static_cast<std::uint32_t>(fileData.size()), bimg::TextureFormat::RGBA8, &err) };
+            static_cast<uint32_t>(fileData.size()), bimg::TextureFormat::RGBA8, &err) };
 
         if (image == nullptr)
         {
@@ -626,13 +649,25 @@ namespace krn
         return handle;
     }
 
-    bgfx::TextureHandle Renderer::CreateSolidTexture(std::uint8_t r, std::uint8_t g, std::uint8_t b, std::uint8_t a)
+    void Renderer::BindMaterial(const GPU_Resources& resources, uint32_t materialIndex) const
     {
-        const std::uint8_t pixel[4] { r, g, b, a };
+        const MaterialGPU& material { resources.materials[materialIndex] };
 
-        return bgfx::createTexture2D(1, 1, false, 1, bgfx::TextureFormat::RGBA8,
-            BGFX_SAMPLER_NONE, bgfx::copy(pixel, sizeof(pixel)));
+        bgfx::setUniform(u_baseColorFactor, &material.albedo);
+        bgfx::setUniform(u_metallicRoughnessFactor, &material.metallicRoughness);
+        bgfx::setUniform(u_emissiveFactor, &material.emissive);
+
+        bgfx::setTexture(0, s_albedo, material.albedoTex);
+        bgfx::setTexture(1, s_normal, material.normalTex);
+        bgfx::setTexture(2, s_metallicRoughness, material.metallicRoughnessTex);
+        bgfx::setTexture(3, s_emissive, material.emissiveTex);
     }
+
+
+
+    // --------------------
+    // --- GLTF loading ---
+    // --------------------
 
     std::optional<GLTF_LoadResult> Renderer::LoadGLTF(const std::vector<fs::path>& files)
     {

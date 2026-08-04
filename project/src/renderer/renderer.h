@@ -34,7 +34,7 @@ namespace krn
         bgfx::VertexBufferHandle vbh { bgfx::kInvalidHandle };
         bgfx::IndexBufferHandle ibh { bgfx::kInvalidHandle };
         std::vector<size_t> primitives { };
-        std::vector<size_t> materials { };
+        std::vector<uint32_t> materials { };
     };
 
     struct MaterialGPU
@@ -113,14 +113,16 @@ namespace krn
         void DrawEmptyFrame();
         void DrawFrame(EngineCtx& ctx, Scene& scene, Registry& reg);
 
-        // Scene-scoped: valid only for the GPU_ResourcesHandle of a
-        // currently loaded scene (see Scene::GetResourcesHandle()); freed
-        // when that scene unloads. Geometry only - CreateMesh doesn't know
-        // or care about materials; pair its MeshHandle with a
-        // MaterialListHandle from CreateMaterialList to get a Model.
-        MeshHandle CreateMesh(GPU_ResourcesHandle handle, const MeshDesc& data);
+        MeshGPU& GetMesh(Scene& scene, MeshHandle handle);
+        MaterialGPU& GetMaterial(Scene& scene, uint32_t id);
+
+
 
         private:
+
+        // ----------------------------
+        // --- Resource managemenet ---
+        // ----------------------------
 
         // Called by the SceneManager on scene load
         void OnLoadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path> resToLoad);
@@ -128,51 +130,68 @@ namespace krn
         // Called by the SceneManager on scene unload
         void OnUnloadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg);
 
-        // First entity with a Camera, preferring one with primary == true;
-        // NULL_ENTITY if the scene has none
-        Entity FindPrimaryCamera(Registry& reg);
-
-        // Gathers every DirectionalLight/PointLight in the scene and pushes
-        // them to the lighting uniforms, zero-filling unused point light slots
-        void UpdateLights(EngineCtx& ctx, Scene& scene, Registry& reg);
-
-        // Creates the shared shader program, uniforms and default textures.
-        // Called once from the constructor, after bgfx::init().
+        // Creates the shared shader program, uniforms and default textures
         void InitPermanentResources(const fs::path& shaderDir);
 
         // Allocates a fresh GPU_Resources slot for a newly-loaded scene
         GPU_ResourcesHandle CreateSceneResources();
 
         // Destroys every mesh/material/texture in a scene's GPU_Resources
-        // and frees the slot; called on scene unload. Default textures and
-        // the shader program survive this.
+        // and frees the slot; called on scene unload
         void DestroySceneResources(GPU_ResourcesHandle handle);
 
+        // Checks if handle is valid and not stale
         bool IsHandleValid(GPU_ResourcesHandle handle) const;
+
+        // Access GPU_Resources by handle
         GPU_Resources& GetSceneResources(GPU_ResourcesHandle handle);
 
-        bgfx::TextureHandle LoadTexture(GPU_Resources& resources, const fs::path& path) const;
-        static bgfx::TextureHandle CreateSolidTexture(std::uint8_t r, std::uint8_t g, std::uint8_t b, std::uint8_t a);
-
+        // Builds a MeshGPU and adds it to resources
         MeshHandle UploadMesh(GPU_Resources& resources, const MeshDesc& data);
 
-        // Builds one MaterialGPU and appends its index to `resources.materials`
-        std::uint32_t UploadMaterial(GPU_Resources& resources, const MaterialDesc& desc);
+        // Builds one MaterialGPU and adds it to resources
+        uint32_t UploadMaterial(GPU_Resources& resources, const MaterialDesc& desc);
+
+
+
+        // ---------------
+        // --- Helpers ---
+        // ---------------
+
+        // First entity with a Camera, preferring one with primary == true
+        Entity FindPrimaryCamera(Registry& reg);
+
+        // Gathers every DirectionalLight/PointLight in the scene and pushes
+        // them to the lighting uniforms, zero-filling unused point light slots
+        void UpdateLights(EngineCtx& ctx, Scene& scene, Registry& reg);
+
+        // Loads one texture from a file
+        bgfx::TextureHandle LoadTexture(GPU_Resources& resources, const fs::path& path) const;
 
         // Binds a material's textures/uniforms for the next bgfx::submit()
-        void BindMaterial(const GPU_Resources& resources, std::uint32_t materialIndex) const;
+        void BindMaterial(const GPU_Resources& resources, uint32_t materialIndex) const;
+
+
+
+        // --------------------
+        // --- GLTF loading ---
+        // --------------------
 
         std::optional<GLTF_LoadResult> LoadGLTF(const std::vector<fs::path>& files);
+
+
+
+        // ---------------
+        // --- Members ---
+        // ---------------
 
         fs::path m_DataPath;
 
         Window& m_Window;
 
-        // Scene-scoped GPU resources, one slot per currently-loaded scene;
-        // indexed/validated via GPU_ResourcesHandle (index + generation)
         std::vector<GPU_Resources> m_SceneResources;
-        std::vector<std::uint32_t> m_Generations;
-        std::vector<std::uint32_t> m_FreeSlots;
+        std::vector<uint32_t> m_Generations;
+        std::vector<uint32_t> m_FreeSlots;
 
         bgfx::ProgramHandle m_PBRProgram { bgfx::kInvalidHandle };
 
@@ -184,17 +203,16 @@ namespace krn
         bgfx::UniformHandle s_metallicRoughness { bgfx::kInvalidHandle };
         bgfx::UniformHandle s_emissive { bgfx::kInvalidHandle };
 
-        // Fallback textures bound whenever a Material doesn't provide its own
-        bgfx::TextureHandle m_DefaultAlbedo { bgfx::kInvalidHandle };       // flat white
-        bgfx::TextureHandle m_DefaultNormal { bgfx::kInvalidHandle };       // flat tangent-space normal (0.5, 0.5, 1.0)
+        bgfx::TextureHandle m_DefaultAlbedo { bgfx::kInvalidHandle }; // flat white
+        bgfx::TextureHandle m_DefaultNormal { bgfx::kInvalidHandle }; // flat tangent-space normal (0.5, 0.5, 1.0)
         bgfx::TextureHandle m_DefaultMetallicRoughness { bgfx::kInvalidHandle };
-        bgfx::TextureHandle m_DefaultEmissive { bgfx::kInvalidHandle };    // flat black
+        bgfx::TextureHandle m_DefaultEmissive { bgfx::kInvalidHandle }; // flat black
 
         bgfx::UniformHandle u_camPos { bgfx::kInvalidHandle };
         bgfx::UniformHandle u_ambientColor { bgfx::kInvalidHandle };
         bgfx::UniformHandle u_dirLightDir { bgfx::kInvalidHandle };
         bgfx::UniformHandle u_dirLightColor { bgfx::kInvalidHandle };
-        bgfx::UniformHandle u_pointLightPos { bgfx::kInvalidHandle };   // vec4 array: xyz = world pos, w = range
+        bgfx::UniformHandle u_pointLightPos { bgfx::kInvalidHandle }; // vec4 array: xyz = world pos, w = range
         bgfx::UniformHandle u_pointLightColor { bgfx::kInvalidHandle }; // vec4 array: rgb = color * intensity
     };
 }
