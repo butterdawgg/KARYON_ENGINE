@@ -8,6 +8,7 @@
 
 #include "registry.h"
 #include "engine_ctx.h"
+#include "serialization.h"
 
 namespace krn
 {
@@ -30,11 +31,19 @@ namespace krn
     //    reading it if you're not certain it has already been refreshed this
     //    frame (e.g. anything read after the engine's per-frame transform
     //    update, such as rendering, is already current and needs no Ensure call).
-    struct Transform
+    struct Transform : public Registrar<Transform>
     {
         friend class TransformManager;
 
         public:
+
+        static void Register()
+        {
+            SerializeManager::RegisterComponent<Transform>("transform")
+                .Parameter("position", &Transform::m_LocalPosition)
+                .Parameter("rotation", &Transform::m_LocalEulerAngles)
+                .Parameter("scale", &Transform::m_LocalScale);
+        }
 
         Transform() = default;
 

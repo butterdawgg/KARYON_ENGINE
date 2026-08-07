@@ -1,0 +1,26 @@
+<scene>
+	<resources>
+		data/models/sponza/Sponza.gltf
+	</resources>
+
+	<entities>
+		<entity gltf_file_id="0"></entity>
+
+		<entity>
+			<camera></camera>
+			<transform>
+				<position>0, 10, 0</position>
+			</transform>
+		</entity>
+
+		<entity>
+			<directional_light>
+				<intensity>2</intensity>
+			</directional_light>
+			<transform>
+				<rotation>50, 70, 0</rotation>
+			</transform>
+		</entity>
+		
+	</entities>
+</scene>

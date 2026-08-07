@@ -131,7 +131,7 @@ set(SOURCES
     "src/core/window.cpp"
     "src/core/transform.cpp"
     
-)
+ "src/temp/camera_movement.cpp" "src/core/input_manager.cpp")
 
 # Add executable
 add_executable(${PROJECT_NAME} ${SOURCES})

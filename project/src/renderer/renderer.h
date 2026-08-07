@@ -18,6 +18,7 @@
 #include "camera.h"
 #include "model.h"
 #include "lights.h"
+#include "parser.h" // for LoadMetadata, used by LoadGLTFNode below
 
 namespace fs = std::filesystem;
 
@@ -62,7 +63,7 @@ namespace krn
     // Output of loading a gltf scene file
     struct GLTF_LoadResult
     {
-        struct Data
+        struct File
         {
             std::vector<MeshDesc> meshes { };
             std::vector<MaterialDesc> materials { };
@@ -72,15 +73,20 @@ namespace krn
 
             struct Node
             {
-                size_t parentNodeId;
-                std::vector<size_t> childNodeIds;
+                // Sentinel for "no parent" / "no mesh" / "no material
+                // override" - 0 is a valid index, so it can't double as
+                // the empty value
+                static constexpr std::size_t NO_INDEX { static_cast<std::size_t>(-1) };
+
+                std::size_t parentNodeId { NO_INDEX };
+                std::vector<size_t> childNodeIds { };
 
                 glm::vec3 position { };
-                glm::quat rotation { };
+                glm::quat rotation { 1.0f, 0.0f, 0.0f, 0.0f };
                 glm::vec3 scale { 1.0f, 1.0f, 1.0f };
 
-                size_t meshName { };
-                size_t materialName { };
+                std::size_t meshId { NO_INDEX };
+                std::size_t materialId { NO_INDEX };
             };
 
             std::vector<Node> nodes { };
@@ -88,8 +94,8 @@ namespace krn
             std::unordered_map<std::string, size_t> nameToNodeId;
         };
 
-        std::vector<Data> datas;
-        std::unordered_map<fs::path, size_t> filepathToDataId;
+        std::vector<File> files;
+        std::unordered_map<fs::path, size_t> pathToFileId;
     };
 
     // Forward PBR renderer: one directional light, up to MAX_POINT_LIGHTS
@@ -164,18 +170,31 @@ namespace krn
         // --- Helpers ---
         // ---------------
 
-        // First entity with a Camera, preferring one with primary == true
-        Entity FindPrimaryCamera(Registry& reg);
-
-        // Gathers every DirectionalLight/PointLight in the scene and pushes
-        // them to the lighting uniforms, zero-filling unused point light slots
-        void UpdateLights(EngineCtx& ctx, Scene& scene, Registry& reg);
+        // Gathers every DirectionalLight/PointLight in the scene into the
+        // output params, zero-filling unused point light slots. Doesn't touch
+        // bgfx uniforms directly - see BindGlobalUniforms for why.
+        void GatherLights(EngineCtx& ctx, Scene& scene, Registry& reg,
+            glm::vec4& dirDir, glm::vec4& dirColor,
+            glm::vec4 (&pointPos)[MAX_POINT_LIGHTS], glm::vec4 (&pointColor)[MAX_POINT_LIGHTS]) const;
 
         // Loads one texture from a file
         bgfx::TextureHandle LoadTexture(GPU_Resources& resources, const fs::path& path) const;
 
         // Binds a material's textures/uniforms for the next bgfx::submit()
         void BindMaterial(const GPU_Resources& resources, uint32_t materialIndex) const;
+
+        // Binds the uniforms every draw call this frame needs (camera
+        // position, ambient, lights). bgfx::submit()'s default flags
+        // (BGFX_DISCARD_ALL) discard uniform bindings after every single
+        // call - BGFX_DISCARD_STATE, included in that mask, is documented as
+        // "discard state AND UNIFORM BINDINGS" - so unlike setViewTransform
+        // (persistent for the whole view), these have to be re-bound before
+        // every bgfx::submit(), not just once per frame. Skipping that left
+        // every primitive after the first frame's one bgfx::submit() reading
+        // stale/zeroed light+ambient uniforms - i.e. rendering fully unlit.
+        void BindGlobalUniforms(const glm::vec4& camPos, const glm::vec4& ambient,
+            const glm::vec4& dirDir, const glm::vec4& dirColor,
+            const glm::vec4 (&pointPos)[MAX_POINT_LIGHTS], const glm::vec4 (&pointColor)[MAX_POINT_LIGHTS]) const;
 
 
 
@@ -186,8 +205,20 @@ namespace krn
         // Loads scene data from a .gltf/.glb file, returns { filename, loaded data }
         std::optional<GLTF_LoadResult> LoadGLTF(const std::vector<fs::path>& files);
 
-        // Processes a GLTF_LoadResult
-        void ProcessGLTF(GLTF_LoadResult& result);
+        // Processes a GLTF_LoadResult according to LoadMetadata and ModelDesc.
+        // fileMaterialIds/fileMeshHandles map each file's local material/mesh
+        // index to its already-uploaded slot in res (see OnLoadCallback)
+        void PreprocessModels(GLTF_LoadResult& result, Registry& reg, const EngineCtx& ctx, GPU_Resources& res,
+            const std::vector<std::vector<uint32_t>>& fileMaterialIds,
+            const std::vector<std::vector<MeshHandle>>& fileMeshHandles);
+
+        // Recursive helper function to load a GLTF node. meshHandles is the
+        // owning file's slice of fileMeshHandles, already resolved to global
+        // MeshHandles
+        void LoadGLTFNode(const EngineCtx& ctx, Entity entity, LoadMetadata& metadata,
+            Registry& reg, GLTF_LoadResult::File& file, GLTF_LoadResult::File::Node& node,
+            uint32_t nodeId, bool hasEntity, bool loadChildren, const std::vector<MeshHandle>& meshHandles);
+
 
         // ---------------
         // --- Members ---

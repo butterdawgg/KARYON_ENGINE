@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <fstream>
 
 #include <glm/gtc/type_ptr.hpp>
@@ -16,10 +17,12 @@
 #include <bimg/decode.h>
 
 #include <fastgltf/core.hpp>
+#include <fastgltf/glm_element_traits.hpp>
 
 #include <stdexcept>
 
 #include <ranges>
+#include <system_error>
 
 #include "utils.h"
 
@@ -31,6 +34,12 @@ namespace krn
 
     namespace
     {
+        // No material index for a glTF primitive - 0 is a valid material
+        // index, so it can't double as the empty value. Shared between
+        // LoadGLTF (which produces it) and OnLoadCallback (which has to
+        // resolve it to some actual uploaded material)
+        constexpr std::uint32_t NO_GLTF_MATERIAL { static_cast<std::uint32_t>(-1) };
+
         std::vector<std::uint8_t> ReadFile(const fs::path& path)
         {
             std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -108,6 +117,77 @@ namespace krn
             return bgfx::createTexture2D(1, 1, false, 1, bgfx::TextureFormat::RGBA8,
                 BGFX_SAMPLER_NONE, bgfx::copy(pixel, sizeof(pixel)));
         }
+
+        // Derives per-vertex tangents (Lengyel's method) for a primitive whose
+        // glTF data had no TANGENT attribute. Left at their default-constructed
+        // (0,0,0,0), fs_pbr.sc's normalize(v_tangent.xyz - ...) divides by a
+        // zero-length vector and taints the whole TBN basis - and therefore the
+        // lit color - with NaN. [baseVertex, baseVertex + vertexCount) and
+        // [baseIndex, baseIndex + indexCount) address this one primitive's
+        // slice of the mesh's (already-global-indexed) vertex/index arrays.
+        void ComputeTangents(std::vector<Vertex>& vertices, std::size_t baseVertex, std::size_t vertexCount,
+            const std::vector<std::uint32_t>& indices, std::size_t baseIndex, std::size_t indexCount)
+        {
+            std::vector<glm::vec3> tan1(vertexCount, glm::vec3(0.0f));
+            std::vector<glm::vec3> tan2(vertexCount, glm::vec3(0.0f));
+
+            for (std::size_t i = 0; i + 2 < indexCount; i += 3)
+            {
+                const std::size_t i0 { indices[baseIndex + i]     - baseVertex };
+                const std::size_t i1 { indices[baseIndex + i + 1] - baseVertex };
+                const std::size_t i2 { indices[baseIndex + i + 2] - baseVertex };
+
+                const Vertex& v0 { vertices[baseVertex + i0] };
+                const Vertex& v1 { vertices[baseVertex + i1] };
+                const Vertex& v2 { vertices[baseVertex + i2] };
+
+                const glm::vec3 edge1 { v1.position - v0.position };
+                const glm::vec3 edge2 { v2.position - v0.position };
+                const glm::vec2 deltaUV1 { v1.uv - v0.uv };
+                const glm::vec2 deltaUV2 { v2.uv - v0.uv };
+
+                const float denom { deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y };
+
+                if (std::abs(denom) < 1.0e-8f)
+                    continue; // degenerate/absent UVs - this triangle contributes nothing, handled by the per-vertex fallback below
+
+                const float r { 1.0f / denom };
+                const glm::vec3 sdir { (edge1 * deltaUV2.y - edge2 * deltaUV1.y) * r };
+                const glm::vec3 tdir { (edge2 * deltaUV1.x - edge1 * deltaUV2.x) * r };
+
+                tan1[i0] += sdir; tan1[i1] += sdir; tan1[i2] += sdir;
+                tan2[i0] += tdir; tan2[i1] += tdir; tan2[i2] += tdir;
+            }
+
+            for (std::size_t i = 0; i < vertexCount; ++i)
+            {
+                Vertex& v { vertices[baseVertex + i] };
+                const glm::vec3& n { v.normal };
+
+                glm::vec3 t { tan1[i] };
+
+                if (glm::dot(t, t) < 1.0e-12f)
+                {
+                    // No UV-derived tangent survived (isolated vertex, fully
+                    // degenerate UVs) - fall back to an arbitrary vector
+                    // orthogonal to the normal so the TBN basis stays valid,
+                    // even though it won't be UV-aligned
+                    const glm::vec3 arbitrary { std::abs(n.z) < 0.999f
+                        ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(1.0f, 0.0f, 0.0f) };
+
+                    t = glm::normalize(glm::cross(n, arbitrary));
+                }
+                else
+                {
+                    // Gram-Schmidt orthogonalize against the normal
+                    t = glm::normalize(t - n * glm::dot(n, t));
+                }
+
+                const float w { glm::dot(glm::cross(n, t), tan2[i]) < 0.0f ? -1.0f : 1.0f };
+
+                v.tangent = glm::vec4(t, w);
+            }
+        }
     }
 
 
@@ -149,7 +229,7 @@ namespace krn
         InitPermanentResources(dataPath / "shaders" / "bin");
 
         // Create uniforms
-        
+
         // Add OnLoad/OnUnload callbacks
         scenes.AddInternalLoadCallback(
             [this] (const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path>& resToLoad)
@@ -227,7 +307,7 @@ namespace krn
     {
         const Entity cameraEntity { FindPrimaryCamera(reg) };
 
-        if (cameraEntity == NULL_ENTITY)
+        if (cameraEntity == NULL_ENTITY || !reg.Has<Transform>(cameraEntity))
         {
             DrawEmptyFrame();
 
@@ -263,12 +343,14 @@ namespace krn
         bgfx::setViewRect(0, 0, 0, static_cast<uint16_t>(size.width), static_cast<uint16_t>(size.height));
 
         const glm::vec4 camPos { eye, 0.0f };
-        bgfx::setUniform(u_camPos, &camPos);
-
         const glm::vec4 ambient { 0.03f, 0.03f, 0.03f, 0.0f };
-        bgfx::setUniform(u_ambientColor, &ambient);
 
-        UpdateLights(ctx, scene, reg);
+        glm::vec4 dirDir { };
+        glm::vec4 dirColor { };
+        glm::vec4 pointPos[MAX_POINT_LIGHTS] { };
+        glm::vec4 pointColor[MAX_POINT_LIGHTS] { };
+
+        GatherLights(ctx, scene, reg, dirDir, dirColor, pointPos, pointColor);
 
         // Depth test + write, colour + alpha write, MSAA - deliberately no
         // BGFX_STATE_CULL_* bit: this is a "simple" renderer, and getting
@@ -311,14 +393,16 @@ namespace krn
                 const size_t count { mesh.primitives[primitiveId] };
                 const uint32_t matId { mesh.materials[primitiveId] };
 
-                // Transform/buffers/state only apply to the next submit() -
-                // bgfx resets them after each one, so they're re-set per
-                // primitive rather than once per model.
+                // Transform/buffers/state/uniforms only apply to the next
+                // submit() - bgfx discards them all after each one (see
+                // BindGlobalUniforms), so everything is re-set per primitive
+                // rather than once per model/frame.
                 bgfx::setTransform(glm::value_ptr(worldMat));
 
                 bgfx::setVertexBuffer(0, mesh.vbh);
                 bgfx::setIndexBuffer(mesh.ibh, start, count);
 
+                BindGlobalUniforms(camPos, ambient, dirDir, dirColor, pointPos, pointColor);
                 BindMaterial(resources, matId);
 
                 bgfx::setState(STATE);
@@ -358,12 +442,6 @@ namespace krn
 
     void Renderer::OnLoadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path>& resToLoad)
     {
-        // TODO: load gltf files, create entities and give them each a Model, Transform,
-        // LoadMetadata (with correct parent id that TransformManager will process later)
-        // Processs ModelDesc components afterwards
-
-        
-
         auto gltfData { LoadGLTF(resToLoad) };
 
         // Create resources handle and give it to the scene
@@ -372,11 +450,60 @@ namespace krn
 
         GPU_Resources& res { GetSceneResources(handle) };
 
-        // TODO: for each ModelDesc, resolve gltfFileName/gtlfMeshName into a
-        // MeshDesc (via LoadGLTF), UploadMaterial() each entry in
-        // materialDesc into res, fill the resulting MeshDesc::materials with
-        // those indices, then CreateMesh(handle, meshDesc) and store the
-        // returned MeshHandle on that entity's Model.
+        GLTF_LoadResult result { gltfData.has_value() ? std::move(*gltfData) : GLTF_LoadResult { } };
+
+        // Upload every material and mesh from every loaded file into this
+        // scene's single shared GPU_Resources buffer up front. A mesh's/
+        // material's index in GLTF_LoadResult::File is only meaningful
+        // within its own file, so fileMaterialIds/fileMeshHandles record
+        // where each one actually landed, letting node/ModelDesc references
+        // (which only know the local, per-file index) resolve to the
+        // correct shared entry afterwards.
+        std::optional<uint32_t> defaultMaterialId { };
+
+        std::vector<std::vector<uint32_t>> fileMaterialIds(result.files.size());
+        std::vector<std::vector<MeshHandle>> fileMeshHandles(result.files.size());
+
+        for (std::size_t f = 0; f < result.files.size(); ++f)
+        {
+            GLTF_LoadResult::File& file { result.files[f] };
+
+            std::vector<uint32_t>& materialIds { fileMaterialIds[f] };
+            materialIds.reserve(file.materials.size());
+
+            for (const MaterialDesc& matDesc : file.materials)
+                materialIds.push_back(UploadMaterial(res, matDesc));
+
+            std::vector<MeshHandle>& meshHandles { fileMeshHandles[f] };
+            meshHandles.reserve(file.meshes.size());
+
+            for (const MeshDesc& meshDesc : file.meshes)
+            {
+                // Copy rather than move: file.meshes has to stay intact for
+                // ModelDesc entries that want to build their own, separately
+                // uploaded mesh out of it (see PreprocessModels)
+                MeshDesc resolved { meshDesc };
+
+                for (uint32_t& matIdx : resolved.materials)
+                {
+                    if (matIdx == NO_GLTF_MATERIAL)
+                    {
+                        if (!defaultMaterialId.has_value())
+                            defaultMaterialId = UploadMaterial(res, MaterialDesc { });
+
+                        matIdx = *defaultMaterialId;
+                    }
+                    else
+                    {
+                        matIdx = materialIds[matIdx];
+                    }
+                }
+
+                meshHandles.push_back(UploadMesh(res, resolved));
+            }
+        }
+
+        PreprocessModels(result, reg, ctx, res, fileMaterialIds, fileMeshHandles);
     }
 
     void Renderer::OnUnloadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg)
@@ -544,32 +671,12 @@ namespace krn
     // --- Helpers ---
     // ---------------
 
-    Entity Renderer::FindPrimaryCamera(Registry& reg)
+    void Renderer::GatherLights(EngineCtx& ctx, Scene& scene, Registry& reg,
+        glm::vec4& dirDir, glm::vec4& dirColor,
+        glm::vec4 (&pointPos)[MAX_POINT_LIGHTS], glm::vec4 (&pointColor)[MAX_POINT_LIGHTS]) const
     {
-        auto cameras = reg.View<Camera>();
-        const auto& entities = cameras.Entities();
-
-        Entity fallback { NULL_ENTITY };
-        std::size_t i { 0 };
-
-        for (auto& cam : cameras)
-        {
-            if (fallback == NULL_ENTITY)
-                fallback = entities[i];
-
-            if (cam.primary)
-                return entities[i];
-
-            ++i;
-        }
-
-        return fallback;
-    }
-
-    void Renderer::UpdateLights(EngineCtx& ctx, Scene& scene, Registry& reg)
-    {
-        glm::vec4 dirDir { 0.0f, -1.0f, 0.0f, 0.0f };
-        glm::vec4 dirColor { 0.0f, 0.0f, 0.0f, 0.0f };
+        dirDir = glm::vec4(0.0f, -1.0f, 0.0f, 0.0f);
+        dirColor = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
 
         auto dirLights = reg.View<DirectionalLight>();
         const auto& dirEntities = dirLights.Entities();
@@ -587,11 +694,8 @@ namespace krn
             dirColor = glm::vec4(light.color * light.intensity, 0.0f);
         }
 
-        bgfx::setUniform(u_dirLightDir, &dirDir);
-        bgfx::setUniform(u_dirLightColor, &dirColor);
-
-        glm::vec4 pointPos[MAX_POINT_LIGHTS] { };
-        glm::vec4 pointColor[MAX_POINT_LIGHTS] { };
+        std::fill(std::begin(pointPos), std::end(pointPos), glm::vec4 { });
+        std::fill(std::begin(pointColor), std::end(pointColor), glm::vec4 { });
 
         auto pointLights = reg.View<PointLight>();
         const auto& pointEntities = pointLights.Entities();
@@ -610,7 +714,16 @@ namespace krn
             pointPos[i] = glm::vec4(pos, light.range);
             pointColor[i] = glm::vec4(light.color * light.intensity, 0.0f);
         }
+    }
 
+    void Renderer::BindGlobalUniforms(const glm::vec4& camPos, const glm::vec4& ambient,
+        const glm::vec4& dirDir, const glm::vec4& dirColor,
+        const glm::vec4 (&pointPos)[MAX_POINT_LIGHTS], const glm::vec4 (&pointColor)[MAX_POINT_LIGHTS]) const
+    {
+        bgfx::setUniform(u_camPos, &camPos);
+        bgfx::setUniform(u_ambientColor, &ambient);
+        bgfx::setUniform(u_dirLightDir, &dirDir);
+        bgfx::setUniform(u_dirLightColor, &dirColor);
         bgfx::setUniform(u_pointLightPos, pointPos, static_cast<std::uint16_t>(MAX_POINT_LIGHTS));
         bgfx::setUniform(u_pointLightColor, pointColor, static_cast<std::uint16_t>(MAX_POINT_LIGHTS));
     }
@@ -682,11 +795,35 @@ namespace krn
 
     std::optional<GLTF_LoadResult> Renderer::LoadGLTF(const std::vector<fs::path>& files)
     {
+        using GLTF_File = GLTF_LoadResult::File;
+        using GLTF_Node = GLTF_File::Node;
+
         GLTF_LoadResult result { };
 
-        for (auto& path : files)
+        static constexpr auto supportedExtensions =
+            fastgltf::Extensions::KHR_mesh_quantization |
+            fastgltf::Extensions::KHR_texture_transform |
+            fastgltf::Extensions::KHR_materials_variants;
+
+        // LoadExternalImages is deliberately left out: MaterialDesc only
+        // ever stores texture *paths* (LoadTexture reads + decodes them
+        // itself later, on demand), so image bytes should stay on disk
+        // here rather than get pre-loaded into memory. DecomposeNodeMatrices
+        // guarantees Node::transform always holds the TRS alternative,
+        // matching GLTF_LoadResult::Data::Node's position/rotation/scale.
+        constexpr auto gltfOptions =
+            fastgltf::Options::DontRequireValidAssetMember |
+            fastgltf::Options::AllowDouble |
+            fastgltf::Options::LoadExternalBuffers |
+            fastgltf::Options::GenerateMeshIndices |
+            fastgltf::Options::DecomposeNodeMatrices;
+
+        for (const auto& path : files)
         {
             if (path.extension() != ".gltf" && path.extension() != ".glb")
+                continue;
+
+            if (result.pathToFileId.contains(path))
                 continue;
 
             if (!std::filesystem::exists(path))
@@ -696,19 +833,7 @@ namespace krn
                 continue;
             }
 
-            static constexpr auto supportedExtensions =
-                fastgltf::Extensions::KHR_mesh_quantization |
-                fastgltf::Extensions::KHR_texture_transform |
-                fastgltf::Extensions::KHR_materials_variants;
-
             fastgltf::Parser parser(supportedExtensions);
-
-            constexpr auto gltfOptions =
-                fastgltf::Options::DontRequireValidAssetMember |
-                fastgltf::Options::AllowDouble |
-                fastgltf::Options::LoadExternalBuffers |
-                fastgltf::Options::LoadExternalImages |
-                fastgltf::Options::GenerateMeshIndices;
 
             auto gltfFile = fastgltf::MappedGltfFile::FromPath(path);
             if (!bool(gltfFile))
@@ -719,23 +844,452 @@ namespace krn
                 continue;
             }
 
-            auto asset = parser.loadGltf(gltfFile.get(), path.parent_path(), gltfOptions);
-            if (asset.error() != fastgltf::Error::None)
+            auto assetResult = parser.loadGltf(gltfFile.get(), path.parent_path(), gltfOptions);
+            if (assetResult.error() != fastgltf::Error::None)
             {
                 logError("Resource load failed: can't load gltf file: {}",
-                    fastgltf::getErrorMessage(asset.error()));
+                    fastgltf::getErrorMessage(assetResult.error()));
 
                 continue;
             }
 
-            // TODO: load all data
+            fastgltf::Asset& asset { assetResult.get() };
+
+            GLTF_File data { };
+
+            // Resolves a glTF TextureInfo (base color/normal/metallic-roughness/
+            // emissive) down to a path relative to m_DataPath, the way
+            // MaterialDesc/UploadMaterial expect it. Returns "" (meaning
+            // "use the default texture") for unset, embedded or otherwise
+            // non-file-based images, since this renderer only knows how to
+            // load textures off disk.
+            auto resolveTexturePath = [&] (const auto& infoOpt) -> std::string
+                {
+                    if (!infoOpt.has_value() || infoOpt->textureIndex >= asset.textures.size())
+                        return { };
+
+                    const fastgltf::Texture& texture { asset.textures[infoOpt->textureIndex] };
+
+                    fastgltf::Optional<std::size_t> imageIndex { texture.imageIndex };
+                    if (!imageIndex.has_value()) imageIndex = texture.basisuImageIndex;
+                    if (!imageIndex.has_value()) imageIndex = texture.ddsImageIndex;
+                    if (!imageIndex.has_value()) imageIndex = texture.webpImageIndex;
+
+                    if (!imageIndex.has_value() || *imageIndex >= asset.images.size())
+                        return { };
+
+                    const fastgltf::Image& image { asset.images[*imageIndex] };
+                    const auto* uriSource { std::get_if<fastgltf::sources::URI>(&image.data) };
+
+                    if (uriSource == nullptr || !uriSource->uri.isLocalPath())
+                    {
+                        logWarning("glTF file '{}' references an embedded or non-local image - "
+                            "only file-based textures are supported, skipping", path.string());
+
+                        return { };
+                    }
+
+                    std::error_code ec;
+
+                    const fs::path absolute { fs::weakly_canonical(
+                        path.parent_path() / uriSource->uri.fspath(), ec) };
+
+                    if (ec)
+                        return { };
+
+                    const fs::path relative { fs::relative(absolute, m_DataPath, ec) };
+
+                    if (ec)
+                    {
+                        logWarning("Texture '{}' referenced by '{}' isn't reachable from the data root '{}'",
+                            absolute.string(), path.string(), m_DataPath.string());
+
+                        return { };
+                    }
+
+                    return relative.generic_string();
+                };
+
+                // --- Materials ---
+
+            data.materials.reserve(asset.materials.size());
+
+            for (std::size_t i = 0; i < asset.materials.size(); ++i)
+            {
+                const fastgltf::Material& mat { asset.materials[i] };
+
+                MaterialDesc desc { };
+
+                desc.albedo = glm::vec3(static_cast<float>(mat.pbrData.baseColorFactor[0]),
+                    static_cast<float>(mat.pbrData.baseColorFactor[1]),
+                    static_cast<float>(mat.pbrData.baseColorFactor[2]));
+                desc.metallic = static_cast<float>(mat.pbrData.metallicFactor);
+                desc.roughness = static_cast<float>(mat.pbrData.roughnessFactor);
+                desc.emissive = glm::vec3(static_cast<float>(mat.emissiveFactor[0]),
+                    static_cast<float>(mat.emissiveFactor[1]),
+                    static_cast<float>(mat.emissiveFactor[2]));
+
+                desc.albedoTexture = resolveTexturePath(mat.pbrData.baseColorTexture);
+                desc.metallicRoughnessTexture = resolveTexturePath(mat.pbrData.metallicRoughnessTexture);
+                desc.normalTexture = resolveTexturePath(mat.normalTexture);
+                desc.emissiveTexture = resolveTexturePath(mat.emissiveTexture);
+
+                if (!mat.name.empty())
+                    data.nameToMaterialId[std::string(mat.name.data(), mat.name.size())] = i;
+
+                data.materials.push_back(std::move(desc));
+            }
+
+            // --- Meshes ---
+
+            data.meshes.reserve(asset.meshes.size());
+
+            for (std::size_t i = 0; i < asset.meshes.size(); ++i)
+            {
+                const fastgltf::Mesh& srcMesh { asset.meshes[i] };
+
+                MeshDesc meshDesc { };
+
+                for (const fastgltf::Primitive& primitive : srcMesh.primitives)
+                {
+                    if (primitive.type != fastgltf::PrimitiveType::Triangles)
+                    {
+                        logWarning("Mesh '{}' in '{}' has a non-triangle primitive, skipping it",
+                            srcMesh.name, path.string());
+
+                        continue;
+                    }
+
+                    const auto posIt { primitive.findAttribute("POSITION") };
+                    if (posIt == primitive.attributes.end())
+                    {
+                        logWarning("Mesh '{}' in '{}' has a primitive with no POSITION attribute, skipping it",
+                            srcMesh.name, path.string());
+
+                        continue;
+                    }
+
+                    if (!primitive.indicesAccessor.has_value())
+                    {
+                        logWarning("Mesh '{}' in '{}' has a primitive with no indices, skipping it",
+                            srcMesh.name, path.string());
+
+                        continue;
+                    }
+
+                    const fastgltf::Accessor& posAccessor { asset.accessors[posIt->accessorIndex] };
+
+                    const std::size_t baseVertex { meshDesc.vertices.size() };
+                    meshDesc.vertices.resize(baseVertex + posAccessor.count);
+
+                    fastgltf::iterateAccessorWithIndex<glm::vec3>(asset, posAccessor,
+                        [&] (glm::vec3 v, std::size_t idx) { meshDesc.vertices[baseVertex + idx].position = v; });
+
+                    if (const auto normIt { primitive.findAttribute("NORMAL") };
+                        normIt != primitive.attributes.end())
+                    {
+                        fastgltf::iterateAccessorWithIndex<glm::vec3>(asset, asset.accessors[normIt->accessorIndex],
+                            [&] (glm::vec3 v, std::size_t idx) { meshDesc.vertices[baseVertex + idx].normal = v; });
+                    }
+
+                    const auto tanIt { primitive.findAttribute("TANGENT") };
+                    const bool hasTangents { tanIt != primitive.attributes.end() };
+
+                    if (hasTangents)
+                    {
+                        fastgltf::iterateAccessorWithIndex<glm::vec4>(asset, asset.accessors[tanIt->accessorIndex],
+                            [&] (glm::vec4 v, std::size_t idx) { meshDesc.vertices[baseVertex + idx].tangent = v; });
+                    }
+
+                    if (const auto uvIt { primitive.findAttribute("TEXCOORD_0") };
+                        uvIt != primitive.attributes.end())
+                    {
+                        fastgltf::iterateAccessorWithIndex<glm::vec2>(asset, asset.accessors[uvIt->accessorIndex],
+                            [&] (glm::vec2 v, std::size_t idx) { meshDesc.vertices[baseVertex + idx].uv = v; });
+                    }
+
+                    const fastgltf::Accessor& idxAccessor { asset.accessors[*primitive.indicesAccessor] };
+
+                    const std::size_t baseIndex { meshDesc.indices.size() };
+                    meshDesc.indices.resize(baseIndex + idxAccessor.count);
+
+                    fastgltf::iterateAccessorWithIndex<std::uint32_t>(asset, idxAccessor,
+                        [&] (std::uint32_t vertIdx, std::size_t idx)
+                        {
+                            meshDesc.indices[baseIndex + idx] = static_cast<std::uint32_t>(baseVertex) + vertIdx;
+                        });
+
+                    // glTF makes TANGENT optional, but Vertex::tangent otherwise stays
+                    // zero-initialized, which is a zero-length vector fs_pbr.sc can't
+                    // normalize (see ComputeTangents) - derive one whenever it's missing
+                    if (!hasTangents)
+                    {
+                        ComputeTangents(meshDesc.vertices, baseVertex, posAccessor.count,
+                            meshDesc.indices, baseIndex, idxAccessor.count);
+                    }
+
+                    meshDesc.primitives.push_back(idxAccessor.count);
+                    meshDesc.materials.push_back(primitive.materialIndex
+                        ? static_cast<std::uint32_t>(*primitive.materialIndex) : NO_GLTF_MATERIAL);
+                }
+
+                if (!srcMesh.name.empty())
+                    data.nameToMeshId[std::string(srcMesh.name.data(), srcMesh.name.size())] = i;
+
+                data.meshes.push_back(std::move(meshDesc));
+            }
+
+            // --- Nodes ---
+            // GLTF_LoadResult::Data::Node mirrors asset.nodes index-for-index,
+            // so names/meshes resolved above can address nodes directly by
+            // their glTF index without a separate remapping table.
+
+            data.nodes.resize(asset.nodes.size());
+
+            for (std::size_t i = 0; i < asset.nodes.size(); ++i)
+            {
+                const fastgltf::Node& srcNode { asset.nodes[i] };
+                GLTF_Node& node { data.nodes[i] };
+
+                node.childNodeIds.assign(srcNode.children.begin(), srcNode.children.end());
+
+                if (const auto* trs { std::get_if<fastgltf::TRS>(&srcNode.transform) })
+                {
+                    node.position = glm::vec3(static_cast<float>(trs->translation[0]),
+                        static_cast<float>(trs->translation[1]), static_cast<float>(trs->translation[2]));
+                    node.rotation = glm::quat(static_cast<float>(trs->rotation[3]),
+                        static_cast<float>(trs->rotation[0]), static_cast<float>(trs->rotation[1]),
+                        static_cast<float>(trs->rotation[2]));
+                    node.scale = glm::vec3(static_cast<float>(trs->scale[0]),
+                        static_cast<float>(trs->scale[1]), static_cast<float>(trs->scale[2]));
+                }
+
+                node.meshId = srcNode.meshIndex.has_value() ? *srcNode.meshIndex : GLTF_Node::NO_INDEX;
+
+                // glTF has no notion of a per-node material (materials are
+                // per-primitive) - materialId is left at NO_INDEX until
+                // there's an actual override mechanism to populate it from.
+
+                if (!srcNode.name.empty())
+                    data.nameToNodeId[std::string(srcNode.name.data(), srcNode.name.size())] = i;
+            }
+
+            for (std::size_t i = 0; i < data.nodes.size(); ++i)
+            {
+                for (std::size_t child : data.nodes[i].childNodeIds)
+                {
+                    if (child < data.nodes.size())
+                        data.nodes[child].parentNodeId = i;
+                }
+            }
+
+            result.pathToFileId[path] = result.files.size();
+            result.files.push_back(std::move(data));
         }
 
-        return result.datas.empty() ? std::nullopt : std::optional<GLTF_LoadResult>(result);
+        return result.files.empty() ? std::nullopt : std::optional<GLTF_LoadResult>(std::move(result));
     }
 
-    void Renderer::ProcessGLTF(GLTF_LoadResult& result)
+    void Renderer::PreprocessModels(GLTF_LoadResult& result, Registry& reg, const EngineCtx& ctx, GPU_Resources& res,
+        const std::vector<std::vector<uint32_t>>& fileMaterialIds,
+        const std::vector<std::vector<MeshHandle>>& fileMeshHandles)
     {
+        using GLTF_File = GLTF_LoadResult::File;
+        using GLTF_Node = GLTF_File::Node;
 
+        auto view { reg.View<LoadMetadata>() };
+
+        view.ForEach([&] (Entity entity, LoadMetadata& metadata) -> void
+            {
+                auto& metaNode { metadata.gltfNode };
+
+                if (metaNode.loadedFileId == LoadMetadata::INVALID_ID)
+                    return;
+
+                if (metaNode.loadedFileId >= result.files.size())
+                {
+                    logError("Invalid gltf_file_id attribute in entity metadata: "
+                        "file with id '{}' isn't loaded in this scene", metaNode.loadedFileId);
+
+                    return;
+                }
+
+                GLTF_File& file { result.files[metaNode.loadedFileId] };
+                const std::vector<MeshHandle>& meshHandles { fileMeshHandles[metaNode.loadedFileId] };
+
+                if (metaNode.name.empty())
+                {
+                    // Load entire file: every root node (one with no parent)
+                    // becomes a child of this entity
+                    for (size_t i = 0; i < file.nodes.size(); i++)
+                    {
+                        GLTF_Node& node { file.nodes[i] };
+
+                        if (node.parentNodeId != GLTF_Node::NO_INDEX) // skip non-root nodes
+                            continue;
+
+                        LoadGLTFNode(ctx, entity, metadata, reg, file, node,
+                            static_cast<uint32_t>(i), true, metaNode.loadChildren, meshHandles);
+                    }
+                }
+                else
+                {
+                    auto it = file.nameToNodeId.find(metaNode.name);
+
+                    if (it == file.nameToNodeId.end())
+                    {
+                        logError("Invalid gltf_node_name attribute in entity metadata: "
+                            "node with name '{}' in file with id {} does not exist",
+                            metaNode.name, metaNode.loadedFileId);
+
+                        return;
+                    }
+
+                    size_t nodeId { it->second };
+                    auto& node { file.nodes[nodeId] };
+
+                    LoadGLTFNode(ctx, entity, metadata, reg, file, node,
+                        static_cast<uint32_t>(nodeId), true, metaNode.loadChildren, meshHandles);
+                }
+            });
+
+        auto modelDescs { reg.View<ModelDesc>() };
+        modelDescs.ForEach([&] (Entity entity, ModelDesc& modelDesc) -> void
+            {
+                if (modelDesc.gltfFileName.empty() || modelDesc.gtlfMeshName.empty())
+                    return;
+
+                auto fileIt = result.pathToFileId.find(fs::path(modelDesc.gltfFileName));
+
+                if (fileIt == result.pathToFileId.end())
+                {
+                    logError("ModelDesc on entity {} references gltf file '{}', which isn't loaded in this scene",
+                        entity, modelDesc.gltfFileName);
+
+                    return;
+                }
+
+                const std::size_t fileId { fileIt->second };
+                GLTF_File& file { result.files[fileId] };
+
+                auto meshIt = file.nameToMeshId.find(modelDesc.gtlfMeshName);
+
+                if (meshIt == file.nameToMeshId.end())
+                {
+                    logError("ModelDesc on entity {} references mesh '{}', which doesn't exist in gltf file '{}'",
+                        entity, modelDesc.gtlfMeshName, modelDesc.gltfFileName);
+
+                    return;
+                }
+
+                const std::size_t meshId { meshIt->second };
+
+                Model& model { reg.Has<Model>(entity) ? reg.Get<Model>(entity) : reg.Add<Model>(entity) };
+
+                if (modelDesc.gtlfMaterialName.empty() && modelDesc.materialDesc.empty())
+                {
+                    // No material override - share the file's own, already-uploaded mesh
+                    model.meshHandle = fileMeshHandles[fileId][meshId];
+
+                    return;
+                }
+
+                // Material override requested: this entity needs its own,
+                // separately-uploaded mesh rather than the shared one, since
+                // every other reference to this mesh still wants the file's
+                // original materials
+                std::vector<uint32_t> overrideIds;
+
+                if (!modelDesc.gtlfMaterialName.empty())
+                {
+                    auto matIt = file.nameToMaterialId.find(modelDesc.gtlfMaterialName);
+
+                    if (matIt == file.nameToMaterialId.end())
+                    {
+                        logError("ModelDesc on entity {} references material '{}', "
+                            "which doesn't exist in gltf file '{}'",
+                            entity, modelDesc.gtlfMaterialName, modelDesc.gltfFileName);
+
+                        return;
+                    }
+
+                    overrideIds.push_back(fileMaterialIds[fileId][matIt->second]);
+                }
+                else
+                {
+                    overrideIds.reserve(modelDesc.materialDesc.size());
+
+                    for (const MaterialDesc& matDesc : modelDesc.materialDesc)
+                        overrideIds.push_back(UploadMaterial(res, matDesc));
+                }
+
+                MeshDesc resolved { file.meshes[meshId] };
+
+                for (std::size_t i = 0; i < resolved.materials.size(); ++i)
+                {
+                    // Fewer overrides than primitives: the last override
+                    // applies to every remaining primitive
+                    resolved.materials[i] = overrideIds[std::min(i, overrideIds.size() - 1)];
+                }
+
+                model.meshHandle = UploadMesh(res, resolved);
+            });
+    }
+
+    void Renderer::LoadGLTFNode(const EngineCtx& ctx, Entity entity, LoadMetadata& metadata,
+        Registry& reg, GLTF_LoadResult::File& file, GLTF_LoadResult::File::Node& node,
+        uint32_t nodeId, bool hasEntity, bool loadChildren, const std::vector<MeshHandle>& meshHandles)
+    {
+        using GLTF_File = GLTF_LoadResult::File;
+        using GLTF_Node = GLTF_File::Node;
+
+        // Skip children explicitly excluded via the parent's
+        // gltf_exclude_child_nodes attribute - metadata here is still the
+        // originally-targeted entity's LoadMetadata (it only gets swapped
+        // for a fresh one below, for this and deeper recursive calls), so
+        // this only ever filters that entity's direct children
+        if (!hasEntity)
+        {
+            for (const std::string& excluded : metadata.gltfNode.excludeChildNodes)
+            {
+                auto it = file.nameToNodeId.find(excluded);
+
+                if (it != file.nameToNodeId.end() && it->second == nodeId)
+                    return;
+            }
+        }
+
+        Entity e { hasEntity ? entity : reg.Create() };
+        LoadMetadata& md { hasEntity ? metadata : reg.Add<LoadMetadata>(e) };
+
+        Transform& tr { reg.Has<Transform>(e) ? reg.Get<Transform>(e) : reg.Add<Transform>(e) };
+        tr.SetLocalPosition(node.position);
+        tr.SetLocalRotation(node.rotation);
+        tr.SetLocalScale(node.scale);
+
+        // Newly-created child entities have no LoadMetadata::id for
+        // TransformManager's own load callback to link up later (and don't
+        // need one - nothing else needs to reference them by id), so link
+        // them into the hierarchy directly
+        if (!hasEntity)
+            ctx.transforms.SetParent(reg, e, entity, false);
+
+        if (node.meshId != GLTF_Node::NO_INDEX)
+        {
+            Model& model { reg.Has<Model>(e) ? reg.Get<Model>(e) : reg.Add<Model>(e) };
+            model.meshHandle = meshHandles[node.meshId];
+        }
+
+        // Optionally load children nodes
+        if (loadChildren)
+        {
+            for (auto& childNodeId : node.childNodeIds)
+            {
+                auto& childNode { file.nodes[childNodeId] };
+
+                LoadGLTFNode(ctx, e, md, reg, file, childNode,
+                    static_cast<uint32_t>(childNodeId), false, true, meshHandles);
+            }
+        }
     }
 }

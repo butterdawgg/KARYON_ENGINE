@@ -3,6 +3,7 @@
 
 #include "utils.h"
 #include "engine.h"
+#include "engine_ctx.h"
 #include "window.h"
 #include "event_manager.h"
 #include "input_manager.h"

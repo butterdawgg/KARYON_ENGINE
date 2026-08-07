@@ -109,6 +109,12 @@ namespace krn
 
     void TransformManager::OnLoadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg)
     {
+        // Set local rotation to local euler angles
+        for (auto& transform : reg.View<Transform>())
+        {
+            transform.m_LocalRotation = glm::quat(transform.m_LocalEulerAngles);
+        }
+
         // Get the view of LoadMetadata components
         auto view { reg.View<LoadMetadata>() };
 

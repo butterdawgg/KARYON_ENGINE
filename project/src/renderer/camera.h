@@ -24,6 +24,29 @@ namespace krn
         float farPlane { 1000.0f };
         bool primary { true };
     };
+
+    // Utility function to find camera with the highest priority (used by Renderer)
+    inline Entity FindPrimaryCamera(Registry& reg)
+    {
+        auto cameras = reg.View<Camera>();
+        const auto& entities = cameras.Entities();
+
+        Entity fallback { NULL_ENTITY };
+        std::size_t i { 0 };
+
+        for (auto& cam : cameras)
+        {
+            if (fallback == NULL_ENTITY)
+                fallback = entities[i];
+
+            if (cam.primary)
+                return entities[i];
+
+            ++i;
+        }
+
+        return fallback;
+    }
 }
 
 #endif // !CAMERA_H

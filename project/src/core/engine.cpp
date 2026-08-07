@@ -36,7 +36,7 @@ namespace krn
         #endif
 
         // Init SDL
-        if (!SDL_Init(SDL_INIT_VIDEO))
+        if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD))
         {
             throw std::runtime_error(std::string("SDL_Init Error: ") + SDL_GetError());
         }

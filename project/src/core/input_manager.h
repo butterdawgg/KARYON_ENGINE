@@ -3,6 +3,7 @@
 
 #include <glm/glm.hpp>
 
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <concepts>
@@ -42,10 +43,116 @@ namespace krn
         friend constexpr bool operator==(const BindingHandle&, const BindingHandle&) = default;
     };
 
-    // Snapshot of the state of all connected input devices
+
+
+    // --------------------------
+    // --- Engine-native keys ---
+    // --------------------------
+
+    // Everything below is a self-contained, backend-agnostic vocabulary for
+    // specifying keys/buttons/axes when creating bindings - no SDL types or
+    // headers are ever exposed through this file. input_manager.cpp maps
+    // these to SDL identifiers internally.
+
+    enum class Key : uint16_t
+    {
+        Unknown = 0,
+
+        A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
+
+        Num0, Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9,
+
+        F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+
+        Space, Enter, Escape, Tab, Backspace, Delete, Insert,
+
+        Up, Down, Left, Right, Home, End, PageUp, PageDown,
+
+        LeftShift, RightShift, LeftCtrl, RightCtrl, LeftAlt, RightAlt, LeftGui, RightGui,
+
+        Minus, Equals, LeftBracket, RightBracket, Backslash, Semicolon, Apostrophe,
+        Comma, Period, Slash, Grave,
+
+        KP0, KP1, KP2, KP3, KP4, KP5, KP6, KP7, KP8, KP9,
+        KPDivide, KPMultiply, KPMinus, KPPlus, KPEnter, KPPeriod,
+
+        CapsLock,
+
+        Count
+    };
+
+    enum class MouseButton : uint8_t
+    {
+        Left, Right, Middle, X1, X2,
+
+        Count
+    };
+
+    enum class GamepadButton : uint8_t
+    {
+        South, East, West, North,
+        Back, Guide, Start,
+        LeftStick, RightStick,
+        LeftShoulder, RightShoulder,
+        DPadUp, DPadDown, DPadLeft, DPadRight,
+
+        Count
+    };
+
+    enum class GamepadAxis : uint8_t
+    {
+        LeftX, LeftY, RightX, RightY, LeftTrigger, RightTrigger,
+
+        Count
+    };
+
+
+
+    // ----------------------------
+    // --- Input state snapshot ---
+    // ----------------------------
+
+    // Snapshot of the state of all connected input devices, rebuilt once per
+    // frame by InputManager. Bindings only ever see this type - never SDL.
     struct InputCtx
     {
-        bool keysDown[4] { false, false, false, false }; // dummy code for now
+        static constexpr size_t KEY_COUNT { static_cast<size_t>(Key::Count) };
+        static constexpr size_t MOUSE_BUTTON_COUNT { static_cast<size_t>(MouseButton::Count) };
+        static constexpr size_t GAMEPAD_BUTTON_COUNT { static_cast<size_t>(GamepadButton::Count) };
+        static constexpr size_t GAMEPAD_AXIS_COUNT { static_cast<size_t>(GamepadAxis::Count) };
+
+        // Keyboard
+        std::array<bool, KEY_COUNT> keysDown { };
+        std::array<bool, KEY_COUNT> keysPressed { };  // down this frame, up last frame
+        std::array<bool, KEY_COUNT> keysReleased { }; // up this frame, down last frame
+
+        // Mouse
+        glm::vec2 mousePos { 0.0f };
+        glm::vec2 mouseDelta { 0.0f };
+        std::array<bool, MOUSE_BUTTON_COUNT> mouseButtonsDown { };
+        std::array<bool, MOUSE_BUTTON_COUNT> mouseButtonsPressed { };
+        std::array<bool, MOUSE_BUTTON_COUNT> mouseButtonsReleased { };
+
+        // Gamepad (single, primary controller)
+        bool gamepadConnected { false };
+        std::array<bool, GAMEPAD_BUTTON_COUNT> gamepadButtonsDown { };
+        std::array<bool, GAMEPAD_BUTTON_COUNT> gamepadButtonsPressed { };
+        std::array<bool, GAMEPAD_BUTTON_COUNT> gamepadButtonsReleased { };
+        std::array<float, GAMEPAD_AXIS_COUNT> gamepadAxes { };
+
+        bool IsKeyDown(Key key) const { return keysDown[static_cast<size_t>(key)]; }
+        bool IsKeyPressed(Key key) const { return keysPressed[static_cast<size_t>(key)]; }
+        bool IsKeyReleased(Key key) const { return keysReleased[static_cast<size_t>(key)]; }
+
+        bool IsMouseButtonDown(MouseButton button) const { return mouseButtonsDown[static_cast<size_t>(button)]; }
+        bool IsMouseButtonPressed(MouseButton button) const { return mouseButtonsPressed[static_cast<size_t>(button)]; }
+        bool IsMouseButtonReleased(MouseButton button) const { return mouseButtonsReleased[static_cast<size_t>(button)]; }
+
+        bool IsGamepadButtonDown(GamepadButton button) const { return gamepadButtonsDown[static_cast<size_t>(button)]; }
+        bool IsGamepadButtonPressed(GamepadButton button) const { return gamepadButtonsPressed[static_cast<size_t>(button)]; }
+        bool IsGamepadButtonReleased(GamepadButton button) const { return gamepadButtonsReleased[static_cast<size_t>(button)]; }
+
+        float GetGamepadAxis(GamepadAxis axis) const { return gamepadAxes[static_cast<size_t>(axis)]; }
     };
 
 
@@ -260,7 +367,8 @@ namespace krn
             m_Events(events)
         { }
 
-        ~InputManager() = default;
+        // Defined in the .cpp: closes the SDL gamepad handle, if one is open
+        ~InputManager();
 
         InputManager(const InputManager&) = delete;
         InputManager& operator=(const InputManager&) = delete;
@@ -345,23 +453,34 @@ namespace krn
                 && m_Generations[handle.index] == handle.generation;
         }
 
+        // Read-only access to this frame's input snapshot, for code that
+        // wants to query raw state without going through a binding
+        const InputCtx& GetCtx() const
+        {
+            return m_Ctx;
+        }
+
         private:
 
         // Called once per frame by the Engine
         void Update(float dt)
         {
-            // Build new context
-            InputCtx ctx { };
+            // Refresh the snapshot from the backend
+            UpdateCtx(dt);
 
             // Update bindings
             for (auto& slot : m_Slots)
             {
                 if (slot)
                 {
-                    slot->Update(ctx, dt);
+                    slot->Update(m_Ctx, dt);
                 }
             }
         }
+
+        // Defined in the .cpp: polls SDL and refreshes m_Ctx in place, using
+        // its previous contents to derive the *Pressed/*Released edges
+        void UpdateCtx(float dt);
 
         template<typename R>
         BoundInput<R>& GetBoundInput(BindingHandle<R> handle) const
@@ -371,6 +490,12 @@ namespace krn
         }
 
         EventManager& m_Events;
+
+        InputCtx m_Ctx { };
+
+        // Type-erased SDL_Gamepad*, kept out of this header on purpose - cast
+        // back in input_manager.cpp, where SDL is actually included
+        void* m_GamepadHandle { nullptr };
 
         std::vector<std::unique_ptr<BaseBoundInput>> m_Slots;
         std::vector<uint32_t> m_Generations;
@@ -382,6 +507,8 @@ namespace krn
     // -----------------
     // --- Built-ins ---
     // -----------------
+
+    // --- Concepts ---
 
     template<typename R>
     concept HasLengthGLM =
@@ -399,12 +526,132 @@ namespace krn
 
 
 
+    // --- Binding types ---
+
+    struct OnKeyUp
+    {
+        Key key { Key::Unknown };
+
+        bool Evaluate(const InputCtx& ctx) const
+        {
+            return ctx.IsKeyReleased(key);
+        }
+    };
+
+    struct OnKeyHeld
+    {
+        Key key { Key::Unknown };
+
+        bool Evaluate(const InputCtx& ctx) const
+        {
+            return ctx.IsKeyDown(key);
+        }
+    };
+
+    struct OnKeyDown
+    {
+        Key key { Key::Unknown };
+
+        bool Evaluate(const InputCtx& ctx) const
+        {
+            return ctx.IsKeyPressed(key);
+        }
+    };
+
+    struct OnMouseButtonUp
+    {
+        MouseButton btn { MouseButton::Left };
+
+        bool Evaluate(const InputCtx& ctx) const
+        {
+            return ctx.IsMouseButtonReleased(btn);
+        }
+    };
+
+    struct OnMouseButtonHeld
+    {
+        MouseButton btn { MouseButton::Left };
+
+        bool Evaluate(const InputCtx& ctx) const
+        {
+            return ctx.IsMouseButtonDown(btn);
+        }
+    };
+
+    struct OnMouseButtonDown
+    {
+        MouseButton btn { MouseButton::Left };
+
+        bool Evaluate(const InputCtx& ctx) const
+        {
+            return ctx.IsMouseButtonPressed(btn);
+        }
+    };
+
+    struct Composite2D
+    {
+        Key forward { Key::Unknown };
+        Key back { Key::Unknown };
+        Key left { Key::Unknown };
+        Key right { Key::Unknown };
+
+        glm::vec2 Evaluate(const InputCtx& ctx) const
+        {
+            glm::vec2 value { 0.0f };
+
+            if (ctx.IsKeyDown(forward)) value.y += 1.0f;
+            if (ctx.IsKeyDown(back))    value.y -= 1.0f;
+            if (ctx.IsKeyDown(right))   value.x += 1.0f;
+            if (ctx.IsKeyDown(left))    value.x -= 1.0f;
+
+            return value;
+        }
+    };
+
+    struct Composite3D
+    {
+        Key forward { Key::Unknown };
+        Key back { Key::Unknown };
+        Key left { Key::Unknown };
+        Key right { Key::Unknown };
+        Key up { Key::Unknown };
+        Key down { Key::Unknown };
+
+        glm::vec3 Evaluate(const InputCtx& ctx) const
+        {
+            glm::vec3 value { 0.0f };
+
+            if (ctx.IsKeyDown(forward)) value.z += 1.0f;
+            if (ctx.IsKeyDown(back))    value.z -= 1.0f;
+            if (ctx.IsKeyDown(right))   value.x += 1.0f;
+            if (ctx.IsKeyDown(left))    value.x -= 1.0f;
+            if (ctx.IsKeyDown(up))      value.y += 1.0f;
+            if (ctx.IsKeyDown(down))    value.y -= 1.0f;
+
+            return value;
+        }
+    };
+
+    struct MouseDelta
+    {
+        glm::vec2 Evaluate(const InputCtx& ctx) const
+        {
+            return ctx.mouseDelta;
+        }
+    };
+
+
+
+    // --- Post-processors ---
+
     // Generic radial/magnitude deadzone, works for any R that supports glm::length();
     template<typename R>
     struct Deadzone
     {
         static_assert(HasLengthGLM<R>,
             "Deadzone<R> requires R to support glm::length()");
+
+        using ValueType = R;
 
         float threshold { 0.0f };
 
@@ -414,12 +661,40 @@ namespace krn
         }
     };
 
+    // Clamps glm::vec2/vec3 magnitude to a value (1.0f by default)
+    template<typename R>
+    struct ClampMagnitude
+    {
+        static_assert(HasLengthGLM<R>,
+            "ClampMagnitude<R> requires R to support glm::length()");
+
+        using ValueType = R;
+
+        float minLength { 0.0f };
+        float maxLength { 1.0f };
+
+        R Process(const R& value, float) const
+        {
+            float length = glm::length(value);
+            if (length == 0.0f) return R {}; // Avoid division by zero
+
+            float clampedLength = glm::clamp(length, minLength, maxLength);
+            return (value / length) * clampedLength;
+        }
+    };
+
+
+
+    // --- Event conditions ---
+
     // Emits whenever the action value differs from its previous value, gated by minDeltaSeconds
     template<typename R>
     struct EmitOnChangeCondition
     {
         static_assert(EqualityComparableValue<R>,
             "EmitOnChangeCondition<R> requires R to support operator!=");
+
+        using ValueType = R;
 
         float minDeltaSeconds { 0.0f };
 
@@ -434,6 +709,8 @@ namespace krn
     template<typename R>
     struct AlwaysEmitCondition
     {
+        using ValueType = R;
+
         float minDeltaSeconds { 0.0f };
 
         bool ShouldEmit(const R& /*oldValue*/, const R& /*newValue*/, float dtSinceLastEmit) const

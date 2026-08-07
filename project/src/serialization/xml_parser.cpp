@@ -55,6 +55,8 @@ namespace krn
 
                     if (fs::exists(resPath))
                         resourcesToLoad.push_back(resPath);
+                    else
+                        logError("Resource with path '{}' does not exist", value);
                 }
             }
         }
@@ -133,6 +135,23 @@ namespace krn
                     has = true;
                 }
 
+                if (auto* gltfFileIdAttr { entityElement->FindAttribute("gltf_file_id") })
+                {
+                    int value { };
+
+                    auto err = gltfFileIdAttr->QueryIntValue(&value);
+
+                    if (err == tinyxml2::XML_SUCCESS)
+                    {
+                        if (value >= 0)
+                        {
+                            metadata.gltfNode.loadedFileId = static_cast<uint32_t>(value);
+                        }
+                    }
+
+                    has = true;
+                }
+
                 if (auto* gltfNodeNameAttr { entityElement->FindAttribute("gltf_node_name") })
                 {
                     metadata.gltfNode.name = gltfNodeNameAttr->Value();
@@ -140,9 +159,9 @@ namespace krn
                     has = true;
                 }
 
-                if (auto* gltfLoadHierarchyAttr { entityElement->FindAttribute("gltf_load_children") })
+                if (auto* gltfLoadChildrenAttr { entityElement->FindAttribute("gltf_load_children") })
                 {
-                    gltfLoadHierarchyAttr->QueryBoolValue(&metadata.gltfNode.loadChildren);
+                    gltfLoadChildrenAttr->QueryBoolValue(&metadata.gltfNode.loadChildren);
 
                     has = true;
                 }
@@ -180,17 +199,13 @@ namespace krn
 
                 desc.metadata = parseLoadMetatdata(entityElement);
 
-                if (tinyxml2::XMLElement* componentsElem { entityElement->FirstChildElement("components") };
-                    componentsElem != nullptr)
+                for (tinyxml2::XMLElement* componentElem { entityElement->FirstChildElement() };
+                    componentElem != nullptr; componentElem = componentElem->NextSiblingElement())
                 {
-                    for (tinyxml2::XMLElement* componentElem { componentsElem->FirstChildElement() };
-                        componentElem != nullptr; componentElem = componentElem->NextSiblingElement())
-                    {
-                        auto componentDesc { parseComponent(componentElem) };
+                    auto componentDesc { parseComponent(componentElem) };
 
-                        if (componentDesc.has_value())
-                            desc.components.push_back(componentDesc.value());
-                    }
+                    if (componentDesc.has_value())
+                        desc.components.push_back(componentDesc.value());
                 }
 
                 return desc;

@@ -21,14 +21,15 @@ namespace krn
 
     struct LoadMetadata
     {
+        static constexpr uint32_t INVALID_ID { static_cast<uint32_t>(-1) };
+
         struct GLTF_Node
         {
+            uint32_t loadedFileId { INVALID_ID };
             std::string name { };
             bool loadChildren { false };
             std::vector<std::string> excludeChildNodes { };
         };
-
-        static constexpr uint32_t INVALID_ID { static_cast<uint32_t>(-1) };
 
         uint32_t id { INVALID_ID };
         uint32_t parent { INVALID_ID };

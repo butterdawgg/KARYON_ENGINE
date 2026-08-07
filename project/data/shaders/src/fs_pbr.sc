@@ -88,10 +88,18 @@ void main()
 	vec3 geoNormal = normalize(v_normal);
 	vec3 tangent = normalize(v_tangent.xyz - geoNormal * dot(geoNormal, v_tangent.xyz));
 	vec3 bitangent = cross(geoNormal, tangent) * v_tangent.w;
-	mat3 TBN = mat3(tangent, bitangent, geoNormal);
 
 	vec3 normalSample = texture2D(s_normal, v_texcoord0).xyz * 2.0 - 1.0;
-	vec3 N = normalize(mul(TBN, normalSample) );
+
+	// Apply the TBN basis via an explicit linear combination rather than
+	// building a mat3 and using bgfx's mul(): mul() swaps argument order on
+	// some backends to compensate for HLSL/GLSL row- vs column-major
+	// differences in bgfx's own uniform matrices, but a locally-constructed
+	// mat3 doesn't reliably get the same treatment - which silently
+	// transposed the basis for left-handed vertices (mirrored-UV regions,
+	// tangent.w < 0), while right-handed ones came out fine regardless. This
+	// form is unambiguous on every backend.
+	vec3 N = normalize(tangent * normalSample.x + bitangent * normalSample.y + geoNormal * normalSample.z);
 
 	vec3 V = normalize(u_camPos.xyz - v_worldPos);
 
