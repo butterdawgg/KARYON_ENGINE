@@ -120,6 +120,15 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(bgfx)
 disable_third_party_warnings(${bgfx_SOURCE_DIR})
 
+# Box3D
+include(FetchContent)
+FetchContent_Declare(box3d
+  GIT_REPOSITORY https://github.com/erincatto/box3d.git
+  GIT_TAG v0.1.0)
+
+FetchContent_MakeAvailable(box3d)
+disable_third_party_warnings(${box3d_SOURCE_DIR})
+
 # Set source files
 set(SOURCES
     "src/main.cpp"
@@ -130,8 +139,10 @@ set(SOURCES
     "src/renderer/renderer.cpp"
     "src/core/window.cpp"
     "src/core/transform.cpp"
-    
- "src/temp/camera_movement.cpp" "src/core/input_manager.cpp")
+    "src/core/input_manager.cpp"
+    "src/core/physics.cpp"
+    "src/temp/camera_movement.cpp"
+)
 
 # Add executable
 add_executable(${PROJECT_NAME} ${SOURCES})
@@ -143,7 +154,17 @@ endif()
 
 # bgfx links bx/bimg PRIVATEly, so its own consumers (us) need them named
 # explicitly to use bx::math and bimg::imageParse directly (see renderer.cpp)
-target_link_libraries(${PROJECT_NAME} PRIVATE glm::glm tinyxml2::tinyxml2 fastgltf::fastgltf SDL3::SDL3 bgfx bx bimg bimg_decode)
+target_link_libraries(${PROJECT_NAME} PRIVATE
+    glm::glm
+    tinyxml2::tinyxml2
+    fastgltf::fastgltf
+    SDL3::SDL3
+    bgfx
+    bx
+    bimg
+    bimg_decode
+    box3d::box3d
+)
 
 # Set include directories
 target_include_directories(${PROJECT_NAME} PRIVATE "src" "src/serialization" "src/ecs" "src/renderer" "src/core")
