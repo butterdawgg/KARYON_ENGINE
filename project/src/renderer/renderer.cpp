@@ -3,7 +3,6 @@
 #include "engine_ctx.h"
 #include "scene_manager.h"
 
-
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -26,6 +25,8 @@
 
 #include "utils.h"
 
+
+
 namespace krn
 {
     // -----------------------
@@ -34,10 +35,7 @@ namespace krn
 
     namespace
     {
-        // No material index for a glTF primitive - 0 is a valid material
-        // index, so it can't double as the empty value. Shared between
-        // LoadGLTF (which produces it) and OnLoadCallback (which has to
-        // resolve it to some actual uploaded material)
+        // No material index for a glTF primitive
         constexpr std::uint32_t NO_GLTF_MATERIAL { static_cast<std::uint32_t>(-1) };
 
         std::vector<std::uint8_t> ReadFile(const fs::path& path)
@@ -118,13 +116,7 @@ namespace krn
                 BGFX_SAMPLER_NONE, bgfx::copy(pixel, sizeof(pixel)));
         }
 
-        // Derives per-vertex tangents (Lengyel's method) for a primitive whose
-        // glTF data had no TANGENT attribute. Left at their default-constructed
-        // (0,0,0,0), fs_pbr.sc's normalize(v_tangent.xyz - ...) divides by a
-        // zero-length vector and taints the whole TBN basis - and therefore the
-        // lit color - with NaN. [baseVertex, baseVertex + vertexCount) and
-        // [baseIndex, baseIndex + indexCount) address this one primitive's
-        // slice of the mesh's (already-global-indexed) vertex/index arrays.
+        // Derives per-vertex tangents (Lengyel's method)
         void ComputeTangents(std::vector<Vertex>& vertices, std::size_t baseVertex, std::size_t vertexCount,
             const std::vector<std::uint32_t>& indices, std::size_t baseIndex, std::size_t indexCount)
         {
@@ -219,16 +211,10 @@ namespace krn
             throw std::runtime_error("bgfx::init failed");
         }
 
-        bgfx::setViewClear(0, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x303030ff, 1.0f, 0);
-        bgfx::setViewRect(0, 0, 0, static_cast<uint16_t>(size.width), static_cast<uint16_t>(size.height));
+        bgfx::setViewClear(MAIN_VIEW_ID, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x303030ff, 1.0f, 0);
+        bgfx::setViewRect(MAIN_VIEW_ID, 0, 0, static_cast<uint16_t>(size.width), static_cast<uint16_t>(size.height));
 
-        // Everything here is a bgfx:: call, so it can only run after
-        // bgfx::init() above - hence a separate method instead of doing this
-        // in the member initializer list (members would construct before
-        // bgfx::init() gets a chance to run).
         InitPermanentResources(dataPath / "shaders" / "bin");
-
-        // Create uniforms
 
         // Add OnLoad/OnUnload callbacks
         scenes.AddInternalLoadCallback(
@@ -258,6 +244,29 @@ namespace krn
         bgfx::destroy(u_dirLightColor);
         bgfx::destroy(u_pointLightPos);
         bgfx::destroy(u_pointLightColor);
+
+        bgfx::destroy(u_shadowMapMtx);
+        bgfx::destroy(u_lightOrigin);
+
+        for (std::size_t i = 0; i < NUM_CASCADES; ++i)
+        {
+            bgfx::destroy(s_shadowMap[i]);
+            bgfx::destroy(m_ShadowMap.framebuffers[i]);
+        }
+
+        for (std::size_t i = 0; i < MAX_POINT_LIGHTS; ++i)
+        {
+            bgfx::destroy(s_pointShadowMap[i]);
+
+            for (std::size_t face = 0; face < CUBE_FACE_COUNT; ++face)
+                bgfx::destroy(m_PointShadow.faceFramebuffers[i][face]);
+
+            bgfx::destroy(m_PointShadow.colorCube[i]);
+            bgfx::destroy(m_PointShadow.depthCube[i]);
+        }
+
+        bgfx::destroy(m_ShadowCasterProgram);
+        bgfx::destroy(m_PointShadowCasterProgram);
 
         // Release every scene's GPU resources while bgfx is still up
         for (uint32_t i = 0; i < m_SceneResources.size(); ++i)
@@ -297,8 +306,8 @@ namespace krn
 
     void Renderer::DrawEmptyFrame()
     {
-        // Ensure view 0 is submitted even on frames where nothing else touches it
-        bgfx::touch(0);
+        // Ensure the main view is submitted even on frames where nothing else touches it
+        bgfx::touch(MAIN_VIEW_ID);
 
         bgfx::frame();
     }
@@ -333,14 +342,8 @@ namespace krn
         const float aspect { size.height != 0
             ? static_cast<float>(size.width) / static_cast<float>(size.height) : 1.0f };
 
-        // bx::mtxProj takes fovy in degrees despite its header comment saying
-        // radians (confirmed empirically: passing radians(60) here produced a
-        // ~0.5 degree effective FOV - everything off-screen)
         bx::mtxProj(proj, camera.FOV, aspect, camera.nearPlane, camera.farPlane,
             bgfx::getCaps()->homogeneousDepth);
-
-        bgfx::setViewTransform(0, view, proj);
-        bgfx::setViewRect(0, 0, 0, static_cast<uint16_t>(size.width), static_cast<uint16_t>(size.height));
 
         const glm::vec4 camPos { eye, 0.0f };
         const glm::vec4 ambient { 0.03f, 0.03f, 0.03f, 0.0f };
@@ -349,19 +352,93 @@ namespace krn
         glm::vec4 dirColor { };
         glm::vec4 pointPos[MAX_POINT_LIGHTS] { };
         glm::vec4 pointColor[MAX_POINT_LIGHTS] { };
+        std::size_t activePointLightCount { 0 };
 
-        GatherLights(ctx, scene, reg, dirDir, dirColor, pointPos, pointColor);
-
-        // Depth test + write, colour + alpha write, MSAA - deliberately no
-        // BGFX_STATE_CULL_* bit: this is a "simple" renderer, and getting
-        // triangle winding wrong on any mesh would silently cull the wrong
-        // side. Double-sided drawing costs some fill-rate but is always
-        // correct; culling can be turned on later per-mesh.
-        constexpr std::uint64_t STATE { BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_WRITE_Z
-            | BGFX_STATE_DEPTH_TEST_LESS | BGFX_STATE_MSAA };
+        GatherLights(ctx, scene, reg, dirDir, dirColor, pointPos, pointColor, activePointLightCount);
 
         GPU_Resources& resources { GetSceneResources(scene.GetResourcesHandle()) };
 
+        constexpr std::uint64_t SHADOW_CASTER_STATE { BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A
+            | BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS };
+
+        // --- Directional light: cascaded shadow map ---
+        float camInvView[16];
+        bx::mtxInverse(camInvView, view);
+
+        ComputeCascadeData(m_ShadowMap, camInvView, camera.FOV, aspect,
+            camera.nearPlane, camera.farPlane, glm::vec3(dirDir));
+
+        for (std::size_t c = 0; c < NUM_CASCADES; ++c)
+        {
+            const bgfx::ViewId vid { static_cast<bgfx::ViewId>(c) };
+
+            // Clear colour to PackFloatToRgba(1.0) ("farthest") so any texel
+            // no caster touched reads as unoccluded rather than as garbage
+            bgfx::setViewClear(vid, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0xffffffff, 1.0f, 0);
+            bgfx::setViewFrameBuffer(vid, m_ShadowMap.framebuffers[c]);
+            bgfx::setViewRect(vid, 0, 0, SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+            bgfx::setViewTransform(vid, m_ShadowMap.lightView, m_ShadowMap.lightProj[c]);
+
+            DrawPrimitives(ctx, reg, resources, [&] (uint32_t)
+                {
+                    bgfx::setState(SHADOW_CASTER_STATE);
+                    bgfx::submit(vid, m_ShadowCasterProgram);
+                });
+        }
+
+        // --- Point lights: one omnidirectional cube shadow map each ---
+        for (std::size_t li = 0; li < activePointLightCount; ++li)
+        {
+            const glm::vec4 origin { pointPos[li] }; // xyz = world pos, w = range
+
+            for (std::uint8_t face = 0; face < CUBE_FACE_COUNT; ++face)
+            {
+                const bgfx::ViewId vid { static_cast<bgfx::ViewId>(
+                    POINT_SHADOW_VIEW_BASE + static_cast<bgfx::ViewId>(li) * CUBE_FACE_COUNT + face) };
+
+                float pointView[16];
+                float pointProj[16];
+                ComputePointLightViewProj(face, glm::vec3(origin), origin.w, pointView, pointProj);
+
+                bgfx::setViewClear(vid, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0xffffffff, 1.0f, 0);
+                bgfx::setViewFrameBuffer(vid, m_PointShadow.faceFramebuffers[li][face]);
+                bgfx::setViewRect(vid, 0, 0, POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE);
+                bgfx::setViewTransform(vid, pointView, pointProj);
+
+                DrawPrimitives(ctx, reg, resources, [&] (uint32_t)
+                    {
+                        bgfx::setUniform(u_lightOrigin, &origin);
+                        bgfx::setState(SHADOW_CASTER_STATE);
+                        bgfx::submit(vid, m_PointShadowCasterProgram);
+                    });
+            }
+        }
+
+        // --- Main color pass ---
+
+        bgfx::setViewTransform(MAIN_VIEW_ID, view, proj);
+        bgfx::setViewRect(MAIN_VIEW_ID, 0, 0, static_cast<uint16_t>(size.width), static_cast<uint16_t>(size.height));
+
+        constexpr std::uint64_t STATE { BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_WRITE_Z
+            | BGFX_STATE_DEPTH_TEST_LESS | BGFX_STATE_MSAA };
+
+        DrawPrimitives(ctx, reg, resources, [&] (uint32_t matId)
+            {
+                BindGlobalUniforms(camPos, ambient, dirDir, dirColor, pointPos, pointColor);
+                BindMaterial(resources, matId);
+                BindShadowUniforms();
+
+                bgfx::setState(STATE);
+
+                bgfx::submit(MAIN_VIEW_ID, m_PBRProgram);
+            });
+
+        bgfx::frame();
+    }
+
+    void Renderer::DrawPrimitives(EngineCtx& ctx, Registry& reg, GPU_Resources& resources,
+        const std::function<void(uint32_t materialIndex)>& onPrimitive)
+    {
         auto models = reg.View<Model>();
         const auto& entities = models.Entities();
 
@@ -393,27 +470,16 @@ namespace krn
                 const size_t count { mesh.primitives[primitiveId] };
                 const uint32_t matId { mesh.materials[primitiveId] };
 
-                // Transform/buffers/state/uniforms only apply to the next
-                // submit() - bgfx discards them all after each one (see
-                // BindGlobalUniforms), so everything is re-set per primitive
-                // rather than once per model/frame.
                 bgfx::setTransform(glm::value_ptr(worldMat));
 
                 bgfx::setVertexBuffer(0, mesh.vbh);
                 bgfx::setIndexBuffer(mesh.ibh, start, count);
 
-                BindGlobalUniforms(camPos, ambient, dirDir, dirColor, pointPos, pointColor);
-                BindMaterial(resources, matId);
-
-                bgfx::setState(STATE);
-
-                bgfx::submit(0, m_PBRProgram);
+                onPrimitive(matId);
 
                 start += count;
             }
         }
-
-        bgfx::frame();
     }
 
     MeshGPU& Renderer::GetMesh(Scene& scene, MeshHandle handle)
@@ -452,13 +518,6 @@ namespace krn
 
         GLTF_LoadResult result { gltfData.has_value() ? std::move(*gltfData) : GLTF_LoadResult { } };
 
-        // Upload every material and mesh from every loaded file into this
-        // scene's single shared GPU_Resources buffer up front. A mesh's/
-        // material's index in GLTF_LoadResult::File is only meaningful
-        // within its own file, so fileMaterialIds/fileMeshHandles record
-        // where each one actually landed, letting node/ModelDesc references
-        // (which only know the local, per-file index) resolve to the
-        // correct shared entry afterwards.
         std::optional<uint32_t> defaultMaterialId { };
 
         std::vector<std::vector<uint32_t>> fileMaterialIds(result.files.size());
@@ -479,9 +538,6 @@ namespace krn
 
             for (const MeshDesc& meshDesc : file.meshes)
             {
-                // Copy rather than move: file.meshes has to stay intact for
-                // ModelDesc entries that want to build their own, separately
-                // uploaded mesh out of it (see PreprocessModels)
                 MeshDesc resolved { meshDesc };
 
                 for (uint32_t& matIdx : resolved.materials)
@@ -520,6 +576,62 @@ namespace krn
 
         m_PBRProgram = bgfx::createProgram(vsh, fsh, true);
 
+        const bgfx::ShaderHandle shadowVsh { LoadShader(shaderDir, "vs_shadow_caster") };
+        const bgfx::ShaderHandle shadowFsh { LoadShader(shaderDir, "fs_shadow_caster") };
+
+        m_ShadowCasterProgram = bgfx::createProgram(shadowVsh, shadowFsh, true);
+
+        const bgfx::ShaderHandle pointShadowVsh { LoadShader(shaderDir, "vs_shadow_caster_point") };
+        const bgfx::ShaderHandle pointShadowFsh { LoadShader(shaderDir, "fs_shadow_caster_point") };
+
+        m_PointShadowCasterProgram = bgfx::createProgram(pointShadowVsh, pointShadowFsh, true);
+
+        // --- Directional light cascaded shadow map resources ---
+
+        u_shadowMapMtx = bgfx::createUniform("u_shadowMapMtx", bgfx::UniformType::Mat4, NUM_CASCADES);
+
+        for (std::size_t i = 0; i < NUM_CASCADES; ++i)
+        {
+            s_shadowMap[i] = bgfx::createUniform(("s_shadowMap" + std::to_string(i)).c_str(),
+                bgfx::UniformType::Sampler);
+
+            bgfx::TextureHandle attachments[2] =
+            {
+                bgfx::createTexture2D(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, false, 1,
+                    bgfx::TextureFormat::BGRA8, BGFX_TEXTURE_RT),
+                bgfx::createTexture2D(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, false, 1,
+                    bgfx::TextureFormat::D32F, BGFX_TEXTURE_RT),
+            };
+
+            m_ShadowMap.framebuffers[i] = bgfx::createFrameBuffer(2, attachments, true);
+        }
+
+        // --- Point light cube shadow map resources ---
+
+        u_lightOrigin = bgfx::createUniform("u_lightOrigin", bgfx::UniformType::Vec4);
+
+        for (std::size_t i = 0; i < MAX_POINT_LIGHTS; ++i)
+        {
+            s_pointShadowMap[i] = bgfx::createUniform(("s_pointShadowMap" + std::to_string(i)).c_str(),
+                bgfx::UniformType::Sampler);
+
+            m_PointShadow.colorCube[i] = bgfx::createTextureCube(POINT_SHADOW_MAP_SIZE, false, 1,
+                bgfx::TextureFormat::BGRA8, BGFX_TEXTURE_RT);
+            m_PointShadow.depthCube[i] = bgfx::createTextureCube(POINT_SHADOW_MAP_SIZE, false, 1,
+                bgfx::TextureFormat::D32F, BGFX_TEXTURE_RT);
+
+            for (std::size_t face = 0; face < CUBE_FACE_COUNT; ++face)
+            {
+                bgfx::Attachment attachments[2];
+                attachments[0].init(m_PointShadow.colorCube[i], bgfx::Access::Write,
+                    static_cast<uint16_t>(face), 1, 0, BGFX_RESOLVE_NONE);
+                attachments[1].init(m_PointShadow.depthCube[i], bgfx::Access::Write,
+                    static_cast<uint16_t>(face), 1, 0, BGFX_RESOLVE_NONE);
+
+                m_PointShadow.faceFramebuffers[i][face] = bgfx::createFrameBuffer(2, attachments, false);
+            }
+        }
+
         u_baseColorFactor = bgfx::createUniform("u_baseColorFactor", bgfx::UniformType::Vec4);
         u_metallicRoughnessFactor = bgfx::createUniform("u_metallicRoughnessFactor", bgfx::UniformType::Vec4);
         u_emissiveFactor = bgfx::createUniform("u_emissiveFactor", bgfx::UniformType::Vec4);
@@ -529,10 +641,6 @@ namespace krn
         s_metallicRoughness = bgfx::createUniform("s_metallicRoughness", bgfx::UniformType::Sampler);
         s_emissive = bgfx::createUniform("s_emissive", bgfx::UniformType::Sampler);
 
-        // Multiplicative identity for anything combined with a *Factor uniform
-        // in the shader (albedo/emissive: rgb * texture; metallic/roughness:
-        // factor * texture channel), so an unset texture leaves the factor
-        // value unchanged rather than zeroing it out.
         m_DefaultAlbedo = CreateSolidTexture(255, 255, 255, 255);
         m_DefaultNormal = CreateSolidTexture(128, 128, 255, 255); // flat tangent-space normal (0, 0, 1)
         m_DefaultMetallicRoughness = CreateSolidTexture(255, 255, 255, 255); // G = roughness, B = metallic
@@ -623,8 +731,6 @@ namespace krn
 
         if (data.primitives.empty())
         {
-            // No submesh info given - treat the whole index buffer as one
-            // primitive; caller must set data.materials[0] for it to draw
             mesh.primitives.push_back(data.indices.size());
         }
         else
@@ -673,7 +779,8 @@ namespace krn
 
     void Renderer::GatherLights(EngineCtx& ctx, Scene& scene, Registry& reg,
         glm::vec4& dirDir, glm::vec4& dirColor,
-        glm::vec4 (&pointPos)[MAX_POINT_LIGHTS], glm::vec4 (&pointColor)[MAX_POINT_LIGHTS]) const
+        glm::vec4 (&pointPos)[MAX_POINT_LIGHTS], glm::vec4 (&pointColor)[MAX_POINT_LIGHTS],
+        std::size_t& activePointLightCount) const
     {
         dirDir = glm::vec4(0.0f, -1.0f, 0.0f, 0.0f);
         dirColor = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -701,6 +808,7 @@ namespace krn
         const auto& pointEntities = pointLights.Entities();
 
         const std::size_t count { std::min(pointEntities.size(), MAX_POINT_LIGHTS) };
+        activePointLightCount = count;
 
         for (std::size_t i = 0; i < count; ++i)
         {
@@ -726,6 +834,17 @@ namespace krn
         bgfx::setUniform(u_dirLightColor, &dirColor);
         bgfx::setUniform(u_pointLightPos, pointPos, static_cast<std::uint16_t>(MAX_POINT_LIGHTS));
         bgfx::setUniform(u_pointLightColor, pointColor, static_cast<std::uint16_t>(MAX_POINT_LIGHTS));
+    }
+
+    void Renderer::BindShadowUniforms() const
+    {
+        bgfx::setUniform(u_shadowMapMtx, m_ShadowMap.shadowMapMtx[0], static_cast<std::uint16_t>(NUM_CASCADES));
+
+        for (std::size_t i = 0; i < NUM_CASCADES; ++i)
+            bgfx::setTexture(static_cast<uint8_t>(4 + i), s_shadowMap[i], bgfx::getTexture(m_ShadowMap.framebuffers[i]));
+
+        for (std::size_t i = 0; i < MAX_POINT_LIGHTS; ++i)
+            bgfx::setTexture(static_cast<uint8_t>(4 + NUM_CASCADES + i), s_pointShadowMap[i], m_PointShadow.colorCube[i]);
     }
 
     bgfx::TextureHandle Renderer::LoadTexture(GPU_Resources& resources, const fs::path& path) const
@@ -805,12 +924,6 @@ namespace krn
             fastgltf::Extensions::KHR_texture_transform |
             fastgltf::Extensions::KHR_materials_variants;
 
-        // LoadExternalImages is deliberately left out: MaterialDesc only
-        // ever stores texture *paths* (LoadTexture reads + decodes them
-        // itself later, on demand), so image bytes should stay on disk
-        // here rather than get pre-loaded into memory. DecomposeNodeMatrices
-        // guarantees Node::transform always holds the TRS alternative,
-        // matching GLTF_LoadResult::Data::Node's position/rotation/scale.
         constexpr auto gltfOptions =
             fastgltf::Options::DontRequireValidAssetMember |
             fastgltf::Options::AllowDouble |
@@ -857,12 +970,6 @@ namespace krn
 
             GLTF_File data { };
 
-            // Resolves a glTF TextureInfo (base color/normal/metallic-roughness/
-            // emissive) down to a path relative to m_DataPath, the way
-            // MaterialDesc/UploadMaterial expect it. Returns "" (meaning
-            // "use the default texture") for unset, embedded or otherwise
-            // non-file-based images, since this renderer only knows how to
-            // load textures off disk.
             auto resolveTexturePath = [&] (const auto& infoOpt) -> std::string
                 {
                     if (!infoOpt.has_value() || infoOpt->textureIndex >= asset.textures.size())
@@ -910,7 +1017,7 @@ namespace krn
                     return relative.generic_string();
                 };
 
-                // --- Materials ---
+            // --- Materials ---
 
             data.materials.reserve(asset.materials.size());
 
@@ -1019,9 +1126,6 @@ namespace krn
                             meshDesc.indices[baseIndex + idx] = static_cast<std::uint32_t>(baseVertex) + vertIdx;
                         });
 
-                    // glTF makes TANGENT optional, but Vertex::tangent otherwise stays
-                    // zero-initialized, which is a zero-length vector fs_pbr.sc can't
-                    // normalize (see ComputeTangents) - derive one whenever it's missing
                     if (!hasTangents)
                     {
                         ComputeTangents(meshDesc.vertices, baseVertex, posAccessor.count,
@@ -1040,9 +1144,6 @@ namespace krn
             }
 
             // --- Nodes ---
-            // GLTF_LoadResult::Data::Node mirrors asset.nodes index-for-index,
-            // so names/meshes resolved above can address nodes directly by
-            // their glTF index without a separate remapping table.
 
             data.nodes.resize(asset.nodes.size());
 
@@ -1065,10 +1166,6 @@ namespace krn
                 }
 
                 node.meshId = srcNode.meshIndex.has_value() ? *srcNode.meshIndex : GLTF_Node::NO_INDEX;
-
-                // glTF has no notion of a per-node material (materials are
-                // per-primitive) - materialId is left at NO_INDEX until
-                // there's an actual override mechanism to populate it from.
 
                 if (!srcNode.name.empty())
                     data.nameToNodeId[std::string(srcNode.name.data(), srcNode.name.size())] = i;
@@ -1188,16 +1285,11 @@ namespace krn
 
                 if (modelDesc.gtlfMaterialName.empty() && modelDesc.materialDesc.empty())
                 {
-                    // No material override - share the file's own, already-uploaded mesh
                     model.meshHandle = fileMeshHandles[fileId][meshId];
 
                     return;
                 }
 
-                // Material override requested: this entity needs its own,
-                // separately-uploaded mesh rather than the shared one, since
-                // every other reference to this mesh still wants the file's
-                // original materials
                 std::vector<uint32_t> overrideIds;
 
                 if (!modelDesc.gtlfMaterialName.empty())
@@ -1227,8 +1319,6 @@ namespace krn
 
                 for (std::size_t i = 0; i < resolved.materials.size(); ++i)
                 {
-                    // Fewer overrides than primitives: the last override
-                    // applies to every remaining primitive
                     resolved.materials[i] = overrideIds[std::min(i, overrideIds.size() - 1)];
                 }
 
@@ -1243,11 +1333,7 @@ namespace krn
         using GLTF_File = GLTF_LoadResult::File;
         using GLTF_Node = GLTF_File::Node;
 
-        // Skip children explicitly excluded via the parent's
-        // gltf_exclude_child_nodes attribute - metadata here is still the
-        // originally-targeted entity's LoadMetadata (it only gets swapped
-        // for a fresh one below, for this and deeper recursive calls), so
-        // this only ever filters that entity's direct children
+        // Skip children explicitly excluded via the parent's gltf_exclude_child_nodes attribute
         if (!hasEntity)
         {
             for (const std::string& excluded : metadata.gltfNode.excludeChildNodes)
@@ -1267,10 +1353,6 @@ namespace krn
         tr.SetLocalRotation(node.rotation);
         tr.SetLocalScale(node.scale);
 
-        // Newly-created child entities have no LoadMetadata::id for
-        // TransformManager's own load callback to link up later (and don't
-        // need one - nothing else needs to reference them by id), so link
-        // them into the hierarchy directly
         if (!hasEntity)
             ctx.transforms.SetParent(reg, e, entity, false);
 

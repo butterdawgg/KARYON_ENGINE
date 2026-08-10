@@ -5,9 +5,7 @@
 
 namespace krn
 {
-    // Sun-style light with no position, only a direction: the entity's
-    // Transform forward axis (+Z, rotated by its world rotation). At most one
-    // is used per frame; if several exist, the first found wins.
+    // Sun-style light with no position, only a direction
     struct DirectionalLight : public Registrar<DirectionalLight>
     {
         static void Register()
@@ -21,8 +19,7 @@ namespace krn
         float intensity { 1.0f };
     };
 
-    // Omnidirectional light at the entity's Transform world position, with a
-    // windowed inverse-square falloff that reaches zero at `range`.
+    // Omnidirectional light at the entity's Transform world position
     struct PointLight : public Registrar<PointLight>
     {
         static void Register()
