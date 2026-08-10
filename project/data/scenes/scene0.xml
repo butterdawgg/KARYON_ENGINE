@@ -18,9 +18,20 @@
 				<intensity>2</intensity>
 			</directional_light>
 			<transform>
-				<rotation>50, 70, 0</rotation>
+				<rotation>-80, 70, 0</rotation>
 			</transform>
 		</entity>
-		
+
+		<!-- Temporary: added to exercise/verify point light cube shadow maps -->
+		<entity>
+			<point_light>
+				<intensity>4</intensity>
+				<range>15</range>
+			</point_light>
+			<transform>
+				<position>0, 5, 0</position>
+			</transform>
+		</entity>
+
 	</entities>
 </scene>
