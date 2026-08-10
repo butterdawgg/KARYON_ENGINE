@@ -51,14 +51,9 @@ namespace krn
         m_Scenes = std::make_unique<SceneManager>(
             std::make_unique<XML_Parser>(), m_Settings.dataPath / "scenes");
 
-        // Constructed before Renderer so SystemManager's scene-load callback
-        // (which runs user System::OnLoad, where gameplay code populates the
-        // scene) registers - and therefore runs - before Renderer's own
-        // scene-load callback, which resolves Model material handles
-        // for whatever entities exist by that point.
-        m_Systems = std::make_unique<SystemManager>(*m_Scenes);
-
         m_Renderer = std::make_unique<Renderer>(*m_Window, *m_Scenes, m_Settings.dataPath);
+
+        m_Systems = std::make_unique<SystemManager>(*m_Scenes);
 
         m_Transforms = std::make_unique<TransformManager>(*m_Scenes);
 
@@ -159,10 +154,10 @@ namespace krn
 
         // Update built-in systems (may load/unload the current scene)
         m_Scenes->Update(ctx);
+
         m_Input->Update(deltaTime);
 
-        // Get current scene - only valid to check after m_Scenes->Update()
-        // above has had a chance to process a scheduled load
+        // Get current scene
         auto* scene { m_Scenes->GetCurrentScene() };
 
         if (scene == nullptr)

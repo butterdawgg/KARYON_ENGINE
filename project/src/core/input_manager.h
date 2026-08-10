@@ -49,11 +49,6 @@ namespace krn
     // --- Engine-native keys ---
     // --------------------------
 
-    // Everything below is a self-contained, backend-agnostic vocabulary for
-    // specifying keys/buttons/axes when creating bindings - no SDL types or
-    // headers are ever exposed through this file. input_manager.cpp maps
-    // these to SDL identifiers internally.
-
     enum class Key : uint16_t
     {
         Unknown = 0,
@@ -112,8 +107,7 @@ namespace krn
     // --- Input state snapshot ---
     // ----------------------------
 
-    // Snapshot of the state of all connected input devices, rebuilt once per
-    // frame by InputManager. Bindings only ever see this type - never SDL.
+    // Snapshot of the state of all connected input devices, rebuilt once per frame by InputManager
     struct InputCtx
     {
         static constexpr size_t KEY_COUNT { static_cast<size_t>(Key::Count) };
@@ -493,8 +487,7 @@ namespace krn
 
         InputCtx m_Ctx { };
 
-        // Type-erased SDL_Gamepad*, kept out of this header on purpose - cast
-        // back in input_manager.cpp, where SDL is actually included
+        // Type-erased SDL_Gamepad*
         void* m_GamepadHandle { nullptr };
 
         std::vector<std::unique_ptr<BaseBoundInput>> m_Slots;

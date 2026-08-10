@@ -128,6 +128,7 @@ set(SOURCES
     "src/core/scene_manager.cpp"
     "src/serialization/xml_parser.cpp"
     "src/renderer/renderer.cpp"
+    "src/renderer/shadow_map.cpp"
     "src/core/window.cpp"
     "src/core/transform.cpp"
     
@@ -161,7 +162,7 @@ bgfx_compile_shaders(
     OUTPUT_DIR ${SHADER_BIN_DIR}
     OUT_FILES_VAR PBR_VS_OUTPUTS
     INCLUDE_DIRS ${BGFX_DIR}/src
-    DEFINES MAX_POINT_LIGHTS=4
+    DEFINES MAX_POINT_LIGHTS=4;NUM_CASCADES=4;SHADOW_NORMAL_OFFSET=0.001
 )
 
 bgfx_compile_shaders(
@@ -171,11 +172,57 @@ bgfx_compile_shaders(
     OUTPUT_DIR ${SHADER_BIN_DIR}
     OUT_FILES_VAR PBR_FS_OUTPUTS
     INCLUDE_DIRS ${BGFX_DIR}/src
-    DEFINES MAX_POINT_LIGHTS=4
+    DEFINES MAX_POINT_LIGHTS=4;NUM_CASCADES=4;SHADOW_MAP_SIZE=2048;SHADOW_BIAS=0.0012;SHADOW_POINT_BIAS=0.01
 )
 
 add_custom_target(pbr_shaders DEPENDS ${PBR_VS_OUTPUTS} ${PBR_FS_OUTPUTS})
 add_dependencies(${PROJECT_NAME} pbr_shaders)
+
+# Depth-only shadow caster shaders: one pair for the directional light's
+# cascades (no varyings needed - see fs_shadow_caster.sc), one pair for
+# point lights' cube faces (carries world position, to pack linear distance
+# instead of a projected depth)
+bgfx_compile_shaders(
+    TYPE VERTEX
+    SHADERS ${SHADER_SRC_DIR}/vs_shadow_caster.sc
+    VARYING_DEF ${SHADER_SRC_DIR}/varying_shadow.def.sc
+    OUTPUT_DIR ${SHADER_BIN_DIR}
+    OUT_FILES_VAR SHADOW_CASTER_VS_OUTPUTS
+    INCLUDE_DIRS ${BGFX_DIR}/src
+)
+
+bgfx_compile_shaders(
+    TYPE FRAGMENT
+    SHADERS ${SHADER_SRC_DIR}/fs_shadow_caster.sc
+    VARYING_DEF ${SHADER_SRC_DIR}/varying_shadow.def.sc
+    OUTPUT_DIR ${SHADER_BIN_DIR}
+    OUT_FILES_VAR SHADOW_CASTER_FS_OUTPUTS
+    INCLUDE_DIRS ${BGFX_DIR}/src
+)
+
+bgfx_compile_shaders(
+    TYPE VERTEX
+    SHADERS ${SHADER_SRC_DIR}/vs_shadow_caster_point.sc
+    VARYING_DEF ${SHADER_SRC_DIR}/varying_shadow_point.def.sc
+    OUTPUT_DIR ${SHADER_BIN_DIR}
+    OUT_FILES_VAR POINT_SHADOW_CASTER_VS_OUTPUTS
+    INCLUDE_DIRS ${BGFX_DIR}/src
+)
+
+bgfx_compile_shaders(
+    TYPE FRAGMENT
+    SHADERS ${SHADER_SRC_DIR}/fs_shadow_caster_point.sc
+    VARYING_DEF ${SHADER_SRC_DIR}/varying_shadow_point.def.sc
+    OUTPUT_DIR ${SHADER_BIN_DIR}
+    OUT_FILES_VAR POINT_SHADOW_CASTER_FS_OUTPUTS
+    INCLUDE_DIRS ${BGFX_DIR}/src
+)
+
+add_custom_target(shadow_caster_shaders DEPENDS
+    ${SHADOW_CASTER_VS_OUTPUTS} ${SHADOW_CASTER_FS_OUTPUTS}
+    ${POINT_SHADOW_CASTER_VS_OUTPUTS} ${POINT_SHADOW_CASTER_FS_OUTPUTS}
+)
+add_dependencies(${PROJECT_NAME} shadow_caster_shaders)
 
 # Copy data folder to output directory after every build, preserving structure
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD

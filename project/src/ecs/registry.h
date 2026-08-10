@@ -94,15 +94,6 @@ namespace krn
 
         // Iterable view over every Component in the registry, e.g.:
         //   for (auto& mr : reg.View<Model>()) { Draw(mr); }
-        //
-        // With more than one type, iterates the intersection of entities that
-        // have all of them, dereferencing to a tuple of references - bind it
-        // with `auto`, not `auto&` (the tuple itself is a temporary, but its
-        // elements are references, so nothing is copied):
-        //   for (auto [mr, tr] : reg.View<Model, Transform>()) { Upload(mr, tr); }
-        //
-        // List the most selective/rarest component first: it drives which
-        // entities are visited, and the rest are only checked for a match.
         template <typename First, typename... Rest>
         auto View()
         {

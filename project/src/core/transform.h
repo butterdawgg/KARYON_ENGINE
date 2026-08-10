@@ -17,20 +17,7 @@ namespace krn
     class Scene;
 
     // Local TRS data for a node in the scene graph, plus a cache of its
-    // resolved world-space equivalents.
-    //
-    // Transform intentionally has no knowledge of the Registry or its own
-    // Entity/Hierarchy, so it cannot resolve its own world-space data (that
-    // requires walking up parents, which live in other components). Instead:
-    //  - Local data is authoritative and always valid. It can only be mutated
-    //    through the Set* methods below, which update it immediately and flag
-    //    the cached world data as stale.
-    //  - World data is a read-only cache, kept current by TransformManager
-    //    (the only class that is allowed to see both a Transform and the
-    //    Registry it lives in). Call TransformManager::Ensure(reg, e) before
-    //    reading it if you're not certain it has already been refreshed this
-    //    frame (e.g. anything read after the engine's per-frame transform
-    //    update, such as rendering, is already current and needs no Ensure call).
+    // resolved world-space equivalents
     struct Transform : public Registrar<Transform>
     {
         friend class TransformManager;
@@ -114,21 +101,15 @@ namespace krn
 
         bool m_Dirty { true };
 
-        // Bumped every time world data is (re)computed; lets a child detect
-        // that its parent moved without needing its own dirty flag set, and
-        // without needing to eagerly mark an entire subtree dirty on write.
+        // Bumped every time world data is (re)computed
         std::uint32_t m_Version { 0 };
 
         // This transform's cached view of its parent's m_Version as of its
-        // own last recompute; a mismatch means the parent has since changed.
+        // own last recompute; a mismatch means the parent has since changed
         std::uint32_t m_ParentVersion { 0 };
     };
 
-    // Intrusive, doubly-linked sibling list. Purely structural data with
-    // nothing derived to cache, so unlike Transform it stays a plain,
-    // fully public, data-oriented struct. Treat it as owned by
-    // TransformManager: mutate it through SetParent/ClearParent rather than
-    // by hand, or the sibling list will desync from `parent`.
+    // Intrusive, doubly-linked sibling list
     struct Hierarchy
     {
         Entity parent { NULL_ENTITY };
@@ -154,11 +135,10 @@ namespace krn
         // Attaches 'child' to 'parent' (NULL_ENTITY makes it a root)
         void SetParent(Registry& reg, Entity child, Entity parent, bool keepWorldTransform = true);
 
-        // Equivalent to SetParent(reg, child, NULL_ENTITY, keepWorldTransform)
+        // Equivalent to SetParent to NULL_ENTITY
         void ClearParent(Registry& reg, Entity child, bool keepWorldTransform = true);
 
-        // Guarantees e's world-space data reflects its current local data and
-        // that of all its ancestors
+        // Guarantees e's world-space data reflects its current local data and that of all its ancestors
         void Ensure(Registry& reg, Entity e);
 
         private:
@@ -169,20 +149,19 @@ namespace krn
         // Called by the Engine once per frame to refresh every transform's world-space data
         void UpdateAll(Registry& reg);
 
-        // Recomputes e's world data if needed, assuming its ancestors are
-        // already resolved. Returns true if a recompute happened, i.e. e's
-        // world data changed as a result of this call.
+        // Recomputes e's world data if needed, assuming its ancestors are already resolved
+        // Returns true if a recompute happened, i.e. e's world data changed as a result of this call
         bool EnsureOne(Registry& reg, Entity e, Transform& t);
 
         void RecomputeRoot(Transform& t) const;
         void RecomputeChild(Transform& t, const Transform& parent) const;
 
-        // Splices e out of its current parent's child list, leaving e a root.
-        // e's own children are untouched and move with it as a subtree.
+        // Splices e out of its current parent's child list, leaving e a root
+        // e's own children are untouched and move with it as a subtree
         void Unlink(Registry& reg, Entity e) const;
 
-        // Splices e into parent's child list and sets e's parent link.
-        // Assumes both e and parent already have a Hierarchy component.
+        // Splices e into parent's child list and sets e's parent link
+        // Assumes both e and parent already have a Hierarchy component
         void Link(Registry& reg, Entity e, Entity parent) const;
     };
 }

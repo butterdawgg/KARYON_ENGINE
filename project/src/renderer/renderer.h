@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -18,7 +19,8 @@
 #include "camera.h"
 #include "model.h"
 #include "lights.h"
-#include "parser.h" // for LoadMetadata, used by LoadGLTFNode below
+#include "shadow_map.h"
+#include "parser.h"
 
 namespace fs = std::filesystem;
 
@@ -73,9 +75,6 @@ namespace krn
 
             struct Node
             {
-                // Sentinel for "no parent" / "no mesh" / "no material
-                // override" - 0 is a valid index, so it can't double as
-                // the empty value
                 static constexpr std::size_t NO_INDEX { static_cast<std::size_t>(-1) };
 
                 std::size_t parentNodeId { NO_INDEX };
@@ -98,18 +97,22 @@ namespace krn
         std::unordered_map<fs::path, size_t> pathToFileId;
     };
 
-    // Forward PBR renderer: one directional light, up to MAX_POINT_LIGHTS
-    // point lights, no shadows. Draws every Model in the current
-    // scene's registry from the primary Camera's point of view. Owns every
-    // GPU resource it draws with - meshes, textures, materials, the shared
-    // PBR shader program - one GPU_Resources per loaded scene, plus
-    // permanent resources (program, uniforms, default textures) that live
-    // for the Renderer's whole lifetime.
+    // Forward PBR renderer: one directional light with cascaded shadow maps,
+    // up to MAX_POINT_LIGHTS point lights each with an omnidirectional cube
+    // shadow map
     class Renderer final
     {
         public:
 
-        static constexpr std::size_t MAX_POINT_LIGHTS { 4 };
+        // Bgfx executes views in ascending id order, so every shadow-caster
+        // view needs a lower id than the main color pass it feeds:
+        // 0..NUM_CASCADES-1 = directional cascade casters,
+        // NUM_CASCADES..NUM_CASCADES+MAX_POINT_LIGHTS*6-1 = point light cube
+        // face casters (POINT_SHADOW_VIEW_BASE + lightIndex*6 + face),
+        // MAIN_VIEW_ID = the main color pass.
+        static constexpr bgfx::ViewId POINT_SHADOW_VIEW_BASE { static_cast<bgfx::ViewId>(NUM_CASCADES) };
+        static constexpr bgfx::ViewId MAIN_VIEW_ID {
+            static_cast<bgfx::ViewId>(NUM_CASCADES + MAX_POINT_LIGHTS * CUBE_FACE_COUNT) };
 
         // dataPath: engine's data root, used to locate compiled shaders
         // (dataPath/shaders/bin/<profile>/...) and, per-scene, any textures
@@ -170,12 +173,11 @@ namespace krn
         // --- Helpers ---
         // ---------------
 
-        // Gathers every DirectionalLight/PointLight in the scene into the
-        // output params, zero-filling unused point light slots. Doesn't touch
-        // bgfx uniforms directly - see BindGlobalUniforms for why.
+        // Gathers every DirectionalLight/PointLight in the scene into the output params
         void GatherLights(EngineCtx& ctx, Scene& scene, Registry& reg,
             glm::vec4& dirDir, glm::vec4& dirColor,
-            glm::vec4 (&pointPos)[MAX_POINT_LIGHTS], glm::vec4 (&pointColor)[MAX_POINT_LIGHTS]) const;
+            glm::vec4(&pointPos)[MAX_POINT_LIGHTS], glm::vec4(&pointColor)[MAX_POINT_LIGHTS],
+            std::size_t& activePointLightCount) const;
 
         // Loads one texture from a file
         bgfx::TextureHandle LoadTexture(GPU_Resources& resources, const fs::path& path) const;
@@ -183,18 +185,17 @@ namespace krn
         // Binds a material's textures/uniforms for the next bgfx::submit()
         void BindMaterial(const GPU_Resources& resources, uint32_t materialIndex) const;
 
-        // Binds the uniforms every draw call this frame needs (camera
-        // position, ambient, lights). bgfx::submit()'s default flags
-        // (BGFX_DISCARD_ALL) discard uniform bindings after every single
-        // call - BGFX_DISCARD_STATE, included in that mask, is documented as
-        // "discard state AND UNIFORM BINDINGS" - so unlike setViewTransform
-        // (persistent for the whole view), these have to be re-bound before
-        // every bgfx::submit(), not just once per frame. Skipping that left
-        // every primitive after the first frame's one bgfx::submit() reading
-        // stale/zeroed light+ambient uniforms - i.e. rendering fully unlit.
+        // Binds the uniforms every draw call this frame needs
         void BindGlobalUniforms(const glm::vec4& camPos, const glm::vec4& ambient,
             const glm::vec4& dirDir, const glm::vec4& dirColor,
             const glm::vec4 (&pointPos)[MAX_POINT_LIGHTS], const glm::vec4 (&pointColor)[MAX_POINT_LIGHTS]) const;
+
+        // Binds the cascade shadow map matrix array + all directional/point shadow samplers
+        void BindShadowUniforms() const;
+
+        // Walks every visible Model's every primitive
+        void DrawPrimitives(EngineCtx& ctx, Registry& reg, GPU_Resources& resources,
+            const std::function<void(uint32_t materialIndex)>& onPrimitive);
 
 
 
@@ -202,19 +203,17 @@ namespace krn
         // --- GLTF loading ---
         // --------------------
 
-        // Loads scene data from a .gltf/.glb file, returns { filename, loaded data }
+        // Loads scene data from a .gltf/.glb file
         std::optional<GLTF_LoadResult> LoadGLTF(const std::vector<fs::path>& files);
 
-        // Processes a GLTF_LoadResult according to LoadMetadata and ModelDesc.
-        // fileMaterialIds/fileMeshHandles map each file's local material/mesh
-        // index to its already-uploaded slot in res (see OnLoadCallback)
+        // Processes a GLTF_LoadResult according to LoadMetadata and ModelDesc
         void PreprocessModels(GLTF_LoadResult& result, Registry& reg, const EngineCtx& ctx, GPU_Resources& res,
             const std::vector<std::vector<uint32_t>>& fileMaterialIds,
             const std::vector<std::vector<MeshHandle>>& fileMeshHandles);
 
-        // Recursive helper function to load a GLTF node. meshHandles is the
-        // owning file's slice of fileMeshHandles, already resolved to global
-        // MeshHandles
+        // Recursive helper function to load a GLTF node
+        // meshHandles is the owning file's slice of fileMeshHandles,
+        // already resolved to global MeshHandles
         void LoadGLTFNode(const EngineCtx& ctx, Entity entity, LoadMetadata& metadata,
             Registry& reg, GLTF_LoadResult::File& file, GLTF_LoadResult::File::Node& node,
             uint32_t nodeId, bool hasEntity, bool loadChildren, const std::vector<MeshHandle>& meshHandles);
@@ -233,6 +232,16 @@ namespace krn
         std::vector<uint32_t> m_FreeSlots;
 
         bgfx::ProgramHandle m_PBRProgram { bgfx::kInvalidHandle };
+        bgfx::ProgramHandle m_ShadowCasterProgram { bgfx::kInvalidHandle };
+        bgfx::ProgramHandle m_PointShadowCasterProgram { bgfx::kInvalidHandle };
+
+        ShadowMapResources m_ShadowMap { };
+        PointShadowMapResources m_PointShadow { };
+
+        bgfx::UniformHandle u_shadowMapMtx { bgfx::kInvalidHandle };
+        bgfx::UniformHandle s_shadowMap[NUM_CASCADES] { };
+        bgfx::UniformHandle s_pointShadowMap[MAX_POINT_LIGHTS] { };
+        bgfx::UniformHandle u_lightOrigin { bgfx::kInvalidHandle }; // point shadow caster only: xyz = light pos, w = range
 
         bgfx::UniformHandle u_baseColorFactor { bgfx::kInvalidHandle };
         bgfx::UniformHandle u_metallicRoughnessFactor { bgfx::kInvalidHandle };
