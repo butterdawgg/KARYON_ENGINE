@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cmath>
 #include <fstream>
 
 #include <glm/gtc/type_ptr.hpp>
@@ -20,7 +19,6 @@
 
 #include <stdexcept>
 
-#include <ranges>
 #include <system_error>
 
 #include "utils.h"
@@ -192,42 +190,11 @@ namespace krn
         m_DataPath(dataPath),
         m_Window(window)
     {
-        // Init bgfx
-        bgfx::PlatformData platformData { };
-        platformData.nwh = window.GetNativeHandle();
-        platformData.ndt = window.GetNativeDisplay();
-
-        const WindowSize size { window.GetSizeInPixels() };
-
-        bgfx::Init init { };
-        init.type = bgfx::RendererType::Count; // let bgfx pick the best backend for this platform
-        init.resolution.width = static_cast<uint32_t>(size.width);
-        init.resolution.height = static_cast<uint32_t>(size.height);
-        init.resolution.reset = BGFX_RESET_VSYNC;
-        init.platformData = platformData;
-
-        if (!bgfx::init(init))
-        {
-            throw std::runtime_error("bgfx::init failed");
-        }
-
-        bgfx::setViewClear(MAIN_VIEW_ID, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x303030ff, 1.0f, 0);
-        bgfx::setViewRect(MAIN_VIEW_ID, 0, 0, static_cast<uint16_t>(size.width), static_cast<uint16_t>(size.height));
-
+        InitBGFX(window);
         InitPermanentResources(dataPath / "shaders" / "bin");
 
-        // Add OnLoad/OnUnload callbacks
-        scenes.AddInternalLoadCallback(
-            [this] (const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path>& resToLoad)
-            {
-                OnLoadCallback(ctx, scene, reg, resToLoad);
-            });
-
-        scenes.AddInternalUnloadCallback(
-            [this] (const EngineCtx& ctx, Scene& scene, Registry& reg)
-            {
-                OnUnloadCallback(ctx, scene, reg);
-            });
+        scenes.OnResourceLoad.Connect<&Renderer::OnLoadCallback>(*this);
+        scenes.OnUnload.Connect<&Renderer::OnUnloadCallback>(*this);
     }
 
 
@@ -567,6 +534,30 @@ namespace krn
         DestroySceneResources(scene.GetResourcesHandle());
 
         scene.SetResourcesHandle(GPU_ResourcesHandle { });
+    }
+
+    void Renderer::InitBGFX(Window& window)
+    {
+        bgfx::PlatformData platformData { };
+        platformData.nwh = window.GetNativeHandle();
+        platformData.ndt = window.GetNativeDisplay();
+
+        const WindowSize size { window.GetSizeInPixels() };
+
+        bgfx::Init init { };
+        init.type = bgfx::RendererType::Count; // let bgfx pick the best backend for this platform
+        init.resolution.width = static_cast<uint32_t>(size.width);
+        init.resolution.height = static_cast<uint32_t>(size.height);
+        init.resolution.reset = BGFX_RESET_VSYNC;
+        init.platformData = platformData;
+
+        if (!bgfx::init(init))
+        {
+            throw std::runtime_error("bgfx::init failed");
+        }
+
+        bgfx::setViewClear(MAIN_VIEW_ID, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x303030ff, 1.0f, 0);
+        bgfx::setViewRect(MAIN_VIEW_ID, 0, 0, static_cast<uint16_t>(size.width), static_cast<uint16_t>(size.height));
     }
 
     void Renderer::InitPermanentResources(const fs::path& shaderDir)

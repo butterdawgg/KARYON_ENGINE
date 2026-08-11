@@ -146,6 +146,9 @@ namespace krn
         void OnUnloadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg);
 
         // Creates the shared shader program, uniforms and default textures
+        void InitBGFX(Window& window);
+
+        // Creates the shared shader program, uniforms and default textures
         void InitPermanentResources(const fs::path& shaderDir);
 
         // Allocates a fresh GPU_Resources slot for a newly-loaded scene

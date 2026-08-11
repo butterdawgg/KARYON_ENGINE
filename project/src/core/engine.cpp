@@ -21,6 +21,7 @@
 #include "system.h"
 #include "window.h"
 #include "transform.h"
+#include "physics.h"
 
 
 
@@ -57,6 +58,8 @@ namespace krn
 
         m_Transforms = std::make_unique<TransformManager>(*m_Scenes);
 
+        m_Physics = std::make_unique<Physics>(*m_Scenes);
+
         // Call user-specified load function after initialization is complete
         if (m_Settings.loadCallback)
         {
@@ -68,7 +71,8 @@ namespace krn
                     .scenes = *m_Scenes,
                     .renderer = *m_Renderer,
                     .systems = *m_Systems,
-                    .transforms = *m_Transforms
+                    .transforms = *m_Transforms,
+                    .physics = *m_Physics
                 });
         }
     }
@@ -149,7 +153,8 @@ namespace krn
             .scenes = *m_Scenes,
             .renderer = *m_Renderer,
             .systems = *m_Systems,
-            .transforms = *m_Transforms
+            .transforms = *m_Transforms,
+            .physics = *m_Physics
         };
 
         // Update built-in systems (may load/unload the current scene)
@@ -184,7 +189,8 @@ namespace krn
             .scenes = *m_Scenes,
             .renderer = *m_Renderer,
             .systems = *m_Systems,
-            .transforms = *m_Transforms
+            .transforms = *m_Transforms,
+            .physics = *m_Physics
         };
 
         // Get current scene

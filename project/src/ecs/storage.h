@@ -6,6 +6,7 @@
 #include <type_traits>
 
 #include "entity.h"
+#include "signal.h"
 
 namespace krn
 {
@@ -38,7 +39,10 @@ namespace krn
             m_Dense.push_back(e);
             m_Data.push_back(Component { });
 
-            return m_Data.back();
+            Component& comp = m_Data.back();
+            m_OnConstruct.Emit(e, comp);
+
+            return comp;
         }
 
         Component& Push(Entity e, const Component& comp)
@@ -54,7 +58,10 @@ namespace krn
             m_Dense.push_back(e);
             m_Data.push_back(comp);
 
-            return m_Data.back();
+            Component& stored = m_Data.back();
+            m_OnConstruct.Emit(e, stored);
+
+            return stored;
         }
 
         Component& Push(Entity e, Component&& comp)
@@ -70,7 +77,10 @@ namespace krn
             m_Dense.push_back(e);
             m_Data.push_back(std::move(comp));
 
-            return m_Data.back();
+            Component& stored = m_Data.back();
+            m_OnConstruct.Emit(e, stored);
+
+            return stored;
         }
 
         template <typename... Args>
@@ -87,7 +97,10 @@ namespace krn
             m_Dense.push_back(e);
             m_Data.push_back(Component { std::forward<Args>(args)... });
 
-            return m_Data.back();
+            Component& comp = m_Data.back();
+            m_OnConstruct.Emit(e, comp);
+
+            return comp;
         }
 
         Component& Get(Entity e)
@@ -106,6 +119,9 @@ namespace krn
             if (!Contains(e)) return;
 
             std::size_t idx = m_Sparse[e];
+
+            m_OnDestroy.Emit(e, m_Data[idx]);
+
             std::size_t last_idx = m_Dense.size() - 1;
 
             if (idx != last_idx)
@@ -134,6 +150,16 @@ namespace krn
         const std::vector<Entity>& Entities() const { return m_Dense; }
         std::vector<Component>& Data() { return m_Data; }
 
+        Signal<Entity, Component&>& OnConstruct()
+        {
+            return m_OnConstruct;
+        }
+
+        Signal<Entity, Component&>& OnDestroy()
+        {
+            return m_OnDestroy;
+        }
+
         private:
 
         static constexpr std::size_t TOMBSTONE = static_cast<std::size_t>(-1);
@@ -141,6 +167,9 @@ namespace krn
         std::vector<std::size_t> m_Sparse;    // entity -> index in packed/m_Data
         std::vector<Entity> m_Dense;         // dense list of entities with this component
         std::vector<Component> m_Data;  // dense data, parallel to packed
+
+        Signal<Entity, Component&> m_OnConstruct;
+        Signal<Entity, Component&> m_OnDestroy;
     };
 }
 

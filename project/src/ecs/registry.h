@@ -9,6 +9,7 @@
 
 #include "entity.h"
 #include "storage.h"
+#include "signal.h"
 
 namespace krn
 {
@@ -107,6 +108,18 @@ namespace krn
             }
         }
 
+        template<typename T>
+        Signal<Entity, T&>& OnConstruct()
+        {
+            return Assure<T>().OnConstruct();
+        }
+
+        template<typename T>
+        Signal<Entity, T&>& OnDestroy()
+        {
+            return Assure<T>().OnDestroy();
+        }
+
         template <typename Component>
         Storage<Component>& Assure()
         {
@@ -119,7 +132,7 @@ namespace krn
                 it = m_Pools.emplace(id, std::make_unique<Storage<Component>>()).first;
             }
 
-            return static_cast<Storage<Component> &>(*it->second);
+            return static_cast<Storage<Component>&>(*it->second);
         }
 
         private:

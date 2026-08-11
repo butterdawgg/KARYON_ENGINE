@@ -74,6 +74,7 @@ namespace krn
         std::unique_ptr<Renderer> m_Renderer;
         std::unique_ptr<SystemManager> m_Systems;
         std::unique_ptr<TransformManager> m_Transforms;
+        std::unique_ptr<Physics> m_Physics;
     };
 }
 

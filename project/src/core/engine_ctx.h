@@ -3,6 +3,7 @@
 
 namespace krn
 {
+    class Engine;
     class Window;
     class EventManager;
     class InputManager;
@@ -10,6 +11,7 @@ namespace krn
     class Renderer;
     class SystemManager;
     class TransformManager;
+    class Physics;
 
     struct EngineCtx
     {
@@ -20,6 +22,7 @@ namespace krn
         Renderer& renderer;
         SystemManager& systems;
         TransformManager& transforms;
+        Physics& physics;
     };
 }
 

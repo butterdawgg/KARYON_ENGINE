@@ -51,6 +51,7 @@ namespace krn
         friend class SystemManager;
         friend class Renderer;
         friend class TransformManager;
+        friend class Physics;
 
         public:
 
@@ -78,11 +79,6 @@ namespace krn
 
         std::unique_ptr<Scene> LoadScheduledScene(const EngineCtx& ctx, const fs::path& path);
 
-        void AddInternalLoadCallback(const InternalLoadCallback& func);
-        void AddInternalUnloadCallback(const InternalUnloadCallback& func);
-        void AddSystemsLoadCallback(const SystemsLoadCallback& func);
-        void AddSystemsUnloadCallback(const SystemsUnloadCallback& func);
-
         std::unique_ptr<Parser> m_Parser;
         fs::path m_ScenesPath;
 
@@ -90,13 +86,11 @@ namespace krn
 
         std::queue<fs::path> m_ScheduledToLoad;
 
-        // Callbacks for internal systems (Renderer, TransformManager etc.)
-        std::vector<InternalLoadCallback> m_InternalLoadCallbacks;
-        std::vector<InternalUnloadCallback> m_InternalUnloadCallbacks;
-
-        // Callbacks for user-defined systems (i.e. SystemManager)
-        std::vector<SystemsLoadCallback> m_SystemsLoadCallbacks;
-        std::vector<SystemsUnloadCallback> m_SystemsUnloadCallbacks;
+        // Accessed only by friend classes
+        Signal<const EngineCtx&, Scene&, Registry&, std::vector<fs::path>&> OnResourceLoad;
+        Signal<const EngineCtx&, Scene&, Registry&> OnPreprocess;
+        Signal<const EngineCtx&, Scene&, Registry&> OnLoad;
+        Signal<const EngineCtx&, Scene&, Registry&> OnUnload;
     };
 }
 

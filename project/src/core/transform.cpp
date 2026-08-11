@@ -11,11 +11,7 @@ namespace krn
     TransformManager::TransformManager(SceneManager& scenes)
     {
         // Add OnLoad callback
-        scenes.AddInternalLoadCallback(
-            [this] (const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path>&)
-            {
-                OnLoadCallback(ctx, scene, reg);
-            });
+        scenes.OnPreprocess.Connect<&TransformManager::OnPreprocess>(*this);
     }
 
     void TransformManager::SetParent(Registry& reg, Entity child, Entity parent, bool keepWorldTransform)
@@ -107,7 +103,67 @@ namespace krn
         EnsureOne(reg, e, reg.Get<Transform>(e));
     }
 
-    void TransformManager::OnLoadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg)
+    void TransformManager::SetWorldPosition(Registry& reg, Entity e, const glm::vec3& worldPosition)
+    {
+        Transform& t = reg.Get<Transform>(e);
+        Entity parent = reg.Has<Hierarchy>(e) ? reg.Get<Hierarchy>(e).parent : NULL_ENTITY;
+
+        if (parent == NULL_ENTITY)
+        {
+            t.SetLocalPosition(worldPosition);
+
+            return;
+        }
+
+        Ensure(reg, parent);
+
+        const Transform& pt = reg.Get<Transform>(parent);
+
+        t.SetLocalPosition(glm::conjugate(pt.m_WorldRotation) * (worldPosition - pt.m_WorldPosition) / pt.m_WorldScale);
+    }
+
+    void TransformManager::SetWorldRotation(Registry& reg, Entity e, const glm::quat& worldRotation)
+    {
+        Transform& t = reg.Get<Transform>(e);
+        Entity parent = reg.Has<Hierarchy>(e) ? reg.Get<Hierarchy>(e).parent : NULL_ENTITY;
+
+        if (parent == NULL_ENTITY)
+        {
+            t.SetLocalRotation(worldRotation);
+
+            return;
+        }
+
+        Ensure(reg, parent);
+
+        const Transform& pt = reg.Get<Transform>(parent);
+
+        t.SetLocalRotation(glm::conjugate(pt.m_WorldRotation) * worldRotation);
+    }
+
+    void TransformManager::SetWorldTransform(Registry& reg, Entity e, const glm::vec3& worldPosition, const glm::quat& worldRotation)
+    {
+        Transform& t = reg.Get<Transform>(e);
+        Entity parent = reg.Has<Hierarchy>(e) ? reg.Get<Hierarchy>(e).parent : NULL_ENTITY;
+
+        if (parent == NULL_ENTITY)
+        {
+            t.SetLocalPosition(worldPosition);
+            t.SetLocalRotation(worldRotation);
+
+            return;
+        }
+
+        Ensure(reg, parent);
+
+        const Transform& pt = reg.Get<Transform>(parent);
+        const glm::quat invParentRotation = glm::conjugate(pt.m_WorldRotation);
+
+        t.SetLocalPosition(invParentRotation * (worldPosition - pt.m_WorldPosition) / pt.m_WorldScale);
+        t.SetLocalRotation(invParentRotation * worldRotation);
+    }
+
+    void TransformManager::OnPreprocess(const EngineCtx& ctx, Scene& scene, Registry& reg)
     {
         // Set local rotation to local euler angles
         for (auto& transform : reg.View<Transform>())

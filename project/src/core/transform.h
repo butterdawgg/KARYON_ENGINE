@@ -141,10 +141,18 @@ namespace krn
         // Guarantees e's world-space data reflects its current local data and that of all its ancestors
         void Ensure(Registry& reg, Entity e);
 
+        // Force-drives e's world-space position/rotation (e.g. from a physics simulation),
+        // converting into local space against its parent's current world transform if parented.
+        // Prefer SetWorldTransform over calling both when setting position and rotation together -
+        // it resolves the parent once instead of twice.
+        void SetWorldPosition(Registry& reg, Entity e, const glm::vec3& worldPosition);
+        void SetWorldRotation(Registry& reg, Entity e, const glm::quat& worldRotation);
+        void SetWorldTransform(Registry& reg, Entity e, const glm::vec3& worldPosition, const glm::quat& worldRotation);
+
         private:
 
         // Called by the SceneManager on scene load
-        void OnLoadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg);
+        void OnPreprocess(const EngineCtx& ctx, Scene& scene, Registry& reg);
 
         // Called by the Engine once per frame to refresh every transform's world-space data
         void UpdateAll(Registry& reg);
