@@ -362,13 +362,13 @@ namespace krn
         return !outEntities.empty();
     }
 
-    bool Physics::ComputePenetration(Entity a, Entity b, glm::vec3& outNormal, float& outDepth) const
+    bool Physics::ComputePenetration(Registry& reg, Entity a, Entity b, glm::vec3& outNormal, float& outDepth) const
     {
-        if (m_ActiveRegistry == nullptr || !m_ActiveRegistry->Has<Collider>(a) || !m_ActiveRegistry->Has<Collider>(b))
+        if (!reg.Has<Collider>(a) || !reg.Has<Collider>(b))
             return false;
 
-        Collider& colA = m_ActiveRegistry->Get<Collider>(a);
-        Collider& colB = m_ActiveRegistry->Get<Collider>(b);
+        Collider& colA = reg.Get<Collider>(a);
+        Collider& colB = reg.Get<Collider>(b);
 
         if (colA.m_ShapeHandle == 0 || colB.m_ShapeHandle == 0)
             return false;
@@ -426,19 +426,18 @@ namespace krn
 
     void Physics::OnLoadCallback(const EngineCtx& ctx, Scene&, Registry& reg)
     {
-        m_ActiveRegistry = &reg;
         m_ActiveTransforms = &ctx.transforms;
 
         // Process already loaded Rigidbodies before Colliders, so a Collider deserialized
         // alongside a Rigidbody always finds its body already created
-        reg.View<Rigidbody>().ForEach([this] (Entity e, Rigidbody& rb) -> void
+        reg.View<Rigidbody>().ForEach([this, &reg] (Entity e, Rigidbody& rb) -> void
             {
-                OnRigidbodyConstructed(e, rb);
+                OnRigidbodyConstructed(reg, e, rb);
             });
 
-        reg.View<Collider>().ForEach([this] (Entity e, Collider& col) -> void
+        reg.View<Collider>().ForEach([this, &reg] (Entity e, Collider& col) -> void
             {
-                OnColliderConstructed(e, col);
+                OnColliderConstructed(reg, e, col);
             });
 
         // Subscribe to construction/destruction signals
@@ -453,26 +452,25 @@ namespace krn
     {
         // The scene's Registry is about to be torn down without going through Registry::Destroy
         // per entity, so bodies need to be swept here explicitly or they'd outlive their entities
-        reg.View<Rigidbody>().ForEach([this] (Entity e, Rigidbody& rb) -> void
+        reg.View<Rigidbody>().ForEach([this, &reg] (Entity e, Rigidbody& rb) -> void
             {
-                OnRigidbodyDestroyed(e, rb);
+                OnRigidbodyDestroyed(reg, e, rb);
             });
 
-        m_ActiveRegistry = nullptr;
         m_ActiveTransforms = nullptr;
     }
 
-    void Physics::OnRigidbodyConstructed(Entity e, Rigidbody& rb)
+    void Physics::OnRigidbodyConstructed(Registry& reg, Entity e, Rigidbody& rb)
     {
         glm::vec3 worldPos { 0.0f, 0.0f, 0.0f };
         glm::quat worldRot { 1.0f, 0.0f, 0.0f, 0.0f };
 
-        if (m_ActiveRegistry != nullptr && m_ActiveRegistry->Has<Transform>(e))
+        if (reg.Has<Transform>(e))
         {
             if (m_ActiveTransforms != nullptr)
-                m_ActiveTransforms->Ensure(*m_ActiveRegistry, e);
+                m_ActiveTransforms->Ensure(reg, e);
 
-            const Transform& t = m_ActiveRegistry->Get<Transform>(e);
+            const Transform& t = reg.Get<Transform>(e);
 
             worldPos = t.GetWorldPosition();
             worldRot = t.GetWorldRotation();
@@ -496,11 +494,11 @@ namespace krn
 
         rb.m_BodyHandle = b3StoreBodyId(body);
 
-        if (m_ActiveRegistry != nullptr && m_ActiveRegistry->Has<Collider>(e))
-            CreateShapeForCollider(e, rb, m_ActiveRegistry->Get<Collider>(e));
+        if (reg.Has<Collider>(e))
+            CreateShapeForCollider(e, rb, reg.Get<Collider>(e));
     }
 
-    void Physics::OnRigidbodyDestroyed(Entity e, Rigidbody& rb)
+    void Physics::OnRigidbodyDestroyed(Registry& reg, Entity e, Rigidbody& rb)
     {
         if (rb.m_BodyHandle == 0)
             return;
@@ -513,13 +511,13 @@ namespace krn
 
         rb.m_BodyHandle = 0;
 
-        if (m_ActiveRegistry != nullptr && m_ActiveRegistry->Has<Collider>(e))
-            m_ActiveRegistry->Get<Collider>(e).m_ShapeHandle = 0;
+        if (reg.Has<Collider>(e))
+            reg.Get<Collider>(e).m_ShapeHandle = 0;
     }
 
-    void Physics::OnColliderConstructed(Entity e, Collider& col)
+    void Physics::OnColliderConstructed(Registry& reg, Entity e, Collider& col)
     {
-        if (m_ActiveRegistry == nullptr || !m_ActiveRegistry->Has<Rigidbody>(e))
+        if (!reg.Has<Rigidbody>(e))
         {
             logWarning("Collider on entity {} has no sibling Rigidbody and will not collide with anything; "
                 "add a Rigidbody (BodyType::Static for immovable geometry) for it to take effect", e);
@@ -527,13 +525,13 @@ namespace krn
             return;
         }
 
-        Rigidbody& rb = m_ActiveRegistry->Get<Rigidbody>(e);
+        Rigidbody& rb = reg.Get<Rigidbody>(e);
 
         if (rb.m_BodyHandle != 0)
             CreateShapeForCollider(e, rb, col);
     }
 
-    void Physics::OnColliderDestroyed(Entity, Collider& col)
+    void Physics::OnColliderDestroyed(Registry&, Entity, Collider& col)
     {
         if (col.m_ShapeHandle == 0)
             return;

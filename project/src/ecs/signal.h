@@ -7,8 +7,18 @@
 
 namespace krn
 {
+    // Type-erased handle onto a Signal<Args...> of unknown Args - lets code that
+    // doesn't know a signal's argument list still own/store it (e.g. Registry
+    // keying signals by component TypeId, the same way it keys Storage<T> pools).
+    class BaseSignal
+    {
+        public:
+
+        virtual ~BaseSignal() = default;
+    };
+
     template<typename... Args>
-    class Signal
+    class Signal : public BaseSignal
     {
         public:
 

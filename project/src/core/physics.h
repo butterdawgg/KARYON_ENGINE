@@ -169,18 +169,18 @@ namespace krn
         // Penetration between two entities' colliders, read from the current simulation state
         // (i.e. as of the last fixed update). Returns false if they aren't touching.
         // outNormal points from a's collider toward b's; outDepth is the positive overlap distance.
-        bool ComputePenetration(Entity a, Entity b, glm::vec3& outNormal, float& outDepth) const;
+        bool ComputePenetration(Registry& reg, Entity a, Entity b, glm::vec3& outNormal, float& outDepth) const;
 
         private:
 
         void OnLoadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg);
         void OnUnloadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg);
 
-        void OnRigidbodyConstructed(Entity e, Rigidbody& rb);
-        void OnRigidbodyDestroyed(Entity e, Rigidbody& rb);
+        void OnRigidbodyConstructed(Registry& reg, Entity e, Rigidbody& rb);
+        void OnRigidbodyDestroyed(Registry& reg, Entity e, Rigidbody& rb);
 
-        void OnColliderConstructed(Entity e, Collider& col);
-        void OnColliderDestroyed(Entity e, Collider& col);
+        void OnColliderConstructed(Registry& reg, Entity e, Collider& col);
+        void OnColliderDestroyed(Registry& reg, Entity e, Collider& col);
 
         void CreateShapeForCollider(Entity e, Rigidbody& rb, Collider& col);
 
@@ -190,9 +190,8 @@ namespace krn
         std::uint32_t m_WorldHandle { 0 }; // packed world id
         int m_SubStepCount { 4 };
 
-        // The registry/transforms of the currently loaded scene, valid between
+        // The transforms of the currently loaded scene, valid between
         // OnLoadCallback and OnUnloadCallback
-        Registry* m_ActiveRegistry { nullptr };
         TransformManager* m_ActiveTransforms { nullptr };
     };
 }

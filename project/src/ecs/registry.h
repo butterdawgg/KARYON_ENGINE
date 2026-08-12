@@ -108,16 +108,18 @@ namespace krn
             }
         }
 
+        // Fires after a Component is constructed on an entity, same as Storage<Component>::OnConstruct,
+        // but with the owning Registry passed along so subscribers don't need to cache one themselves.
         template<typename T>
-        Signal<Entity, T&>& OnConstruct()
+        Signal<Registry&, Entity, T&>& OnConstruct()
         {
-            return Assure<T>().OnConstruct();
+            return AssureRelay<T>(m_ConstructSignals, &Storage<T>::OnConstruct);
         }
 
         template<typename T>
-        Signal<Entity, T&>& OnDestroy()
+        Signal<Registry&, Entity, T&>& OnDestroy()
         {
-            return Assure<T>().OnDestroy();
+            return AssureRelay<T>(m_DestroySignals, &Storage<T>::OnDestroy);
         }
 
         template <typename Component>
@@ -137,8 +139,40 @@ namespace krn
 
         private:
 
+        // Lazily builds the Registry-level relay signal for a component type, wiring it to
+        // relay off the pool's own Storage<Component> signal (picked via sourceAccessor) the
+        // first time it's requested. Storage itself never learns Registry exists; it just gets
+        // one more subscriber like any other.
+        template <typename Component>
+        Signal<Registry&, Entity, Component&>& AssureRelay(
+            std::unordered_map<TypeId, std::unique_ptr<BaseSignal>>& relays,
+            Signal<Entity, Component&>& (Storage<Component>::*sourceAccessor)())
+        {
+            TypeId id = getTypeId<Component>();
+
+            auto it = relays.find(id);
+
+            if (it == relays.end())
+            {
+                auto relay = std::make_unique<Signal<Registry&, Entity, Component&>>();
+                Signal<Registry&, Entity, Component&>* relayPtr = relay.get();
+
+                (Assure<Component>().*sourceAccessor)().Connect(
+                    [this, relayPtr] (Entity e, Component& comp)
+                    {
+                        relayPtr->Emit(*this, e, comp);
+                    });
+
+                it = relays.emplace(id, std::move(relay)).first;
+            }
+
+            return static_cast<Signal<Registry&, Entity, Component&>&>(*it->second);
+        }
+
         Entity m_NextEntity { 0 };
         std::unordered_map<TypeId, std::unique_ptr<BaseStorage>> m_Pools { };
+        std::unordered_map<TypeId, std::unique_ptr<BaseSignal>> m_ConstructSignals { };
+        std::unordered_map<TypeId, std::unique_ptr<BaseSignal>> m_DestroySignals { };
     };
 
 
