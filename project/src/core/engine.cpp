@@ -199,8 +199,11 @@ namespace krn
         if (scene == nullptr)
             return;
 
-        // Update user systems
+        // Update user systems (may apply forces/velocities for this step)
         m_Systems->Update(ctx, scene->GetReg(), deltaTime);
+
+        // Step physics and push simulated poses back into Transform
+        m_Physics->Update(ctx, scene->GetReg(), deltaTime);
     }
 
     void Engine::PollEvents()
