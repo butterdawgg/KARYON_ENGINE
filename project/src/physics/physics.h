@@ -12,83 +12,11 @@
 #include "engine_ctx.h"
 #include "scene_manager.h"
 
+#include "rigidbody.h"
+#include "collider.h"
+
 namespace krn
 {
-    class TransformManager;
-
-    enum class BodyType : std::uint8_t
-    {
-        Static,
-        Kinematic,
-        Dynamic
-    };
-
-    enum class ColliderShape : std::uint8_t
-    {
-        Box,
-        Sphere,
-        Capsule
-    };
-
-    // Drives a physics body. Add a Collider alongside it to give the body
-    // something to collide with - a Rigidbody with no Collider simulates but
-    // never touches anything. Use BodyType::Static for immovable geometry.
-    struct Rigidbody
-    {
-        friend class Physics;
-
-        BodyType type { BodyType::Dynamic };
-
-        glm::vec3 linearVelocity { 0.0f, 0.0f, 0.0f };
-        glm::vec3 angularVelocity { 0.0f, 0.0f, 0.0f };
-
-        float linearDamping { 0.0f };
-        float angularDamping { 0.0f };
-        float gravityScale { 1.0f };
-
-        bool enableSleep { true };
-        bool isBullet { false };
-
-        private:
-
-        // Packed body id, owned and interpreted only by Physics. Zero means
-        // "no simulation body created yet".
-        std::uint64_t m_BodyHandle { 0 };
-    };
-
-    // A collision shape. Requires a sibling Rigidbody to attach to (use
-    // BodyType::Static for immovable geometry) - a Collider with no
-    // Rigidbody on the same entity never enters the simulation.
-    struct Collider
-    {
-        friend class Physics;
-
-        ColliderShape shape { ColliderShape::Box };
-
-        glm::vec3 boxHalfExtents { 0.5f, 0.5f, 0.5f }; // Box only
-        float radius { 0.5f };                          // Sphere & Capsule
-        float capsuleHalfHeight { 0.5f };                // Capsule only: half-length of the cylindrical segment, excluding the end caps
-
-        glm::vec3 center { 0.0f, 0.0f, 0.0f }; // local offset from the body origin
-
-        float density { 1.0f };
-        float friction { 0.6f };
-        float restitution { 0.0f };
-        bool isSensor { false };
-
-        // Collision filtering: a query only reports a shape whose categoryBits
-        // intersect the query's mask, and shapes only collide with each other
-        // when each one's categoryBits intersect the other's maskBits.
-        std::uint64_t categoryBits { ~0ull };
-        std::uint64_t maskBits { ~0ull };
-
-        private:
-
-        // Packed shape id, owned and interpreted only by Physics. Zero means
-        // "no simulation shape created yet".
-        std::uint64_t m_ShapeHandle { 0 };
-    };
-
     class Physics final
     {
         friend class Engine;
@@ -105,7 +33,7 @@ namespace krn
 
         static constexpr std::uint64_t K_ALL_CATEGORIES { ~0ull };
 
-        Physics(SceneManager& scenes);
+        Physics(SceneManager& scenes, TransformManager& transforms);
         ~Physics();
 
         Physics(const Physics&) = delete;
@@ -190,9 +118,7 @@ namespace krn
         std::uint32_t m_WorldHandle { 0 }; // packed world id
         int m_SubStepCount { 4 };
 
-        // The transforms of the currently loaded scene, valid between
-        // OnLoadCallback and OnUnloadCallback
-        TransformManager* m_ActiveTransforms { nullptr };
+        TransformManager& m_Transforms;
     };
 }
 

@@ -141,7 +141,7 @@ set(SOURCES
     "src/core/window.cpp"
     "src/core/transform.cpp"
     "src/core/input_manager.cpp"
-    "src/core/physics.cpp"
+    "src/physics/physics.cpp"
     "src/temp/camera_movement.cpp"
 )
 
@@ -168,7 +168,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 )
 
 # Set include directories
-target_include_directories(${PROJECT_NAME} PRIVATE "src" "src/serialization" "src/ecs" "src/renderer" "src/core")
+target_include_directories(${PROJECT_NAME} PRIVATE "src" "src/serialization" "src/ecs" "src/renderer" "src/core" "src/physics")
 
 # Compile the PBR shaders for every profile this platform needs; bgfx_compile_shaders()
 # picks the right ones (dxbc/dxil/spirv/glsl/essl/metal) and Renderer picks the matching

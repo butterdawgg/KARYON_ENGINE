@@ -58,7 +58,7 @@ namespace krn
 
         m_Transforms = std::make_unique<TransformManager>(*m_Scenes);
 
-        m_Physics = std::make_unique<Physics>(*m_Scenes);
+        m_Physics = std::make_unique<Physics>(*m_Scenes, *m_Transforms);
 
         // Call user-specified load function after initialization is complete
         if (m_Settings.loadCallback)

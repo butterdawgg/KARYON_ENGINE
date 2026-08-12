@@ -1,6 +1,7 @@
 <scene>
 	<resources>
 		data/models/sponza/Sponza.gltf
+		data/models/cube/cube.gltf
 	</resources>
 
 	<entities>
@@ -31,6 +32,13 @@
 			<transform>
 				<position>0, 5, 0</position>
 			</transform>
+		</entity>
+
+		<entity gltf_file_id="0" gltf_node_name="Cube">
+			<rigidbody>
+			</rigidbody>
+			<collider>
+			</collider>
 		</entity>
 
 	</entities>

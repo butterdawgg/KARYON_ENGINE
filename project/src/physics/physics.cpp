@@ -150,7 +150,7 @@ namespace krn
         }
     }
 
-    Physics::Physics(SceneManager& scenes)
+    Physics::Physics(SceneManager& scenes, TransformManager& transforms) : m_Transforms(transforms)
     {
         b3WorldDef worldDef = b3DefaultWorldDef();
         worldDef.gravity = ToB3(glm::vec3(0.0f, -9.81f, 0.0f));
@@ -426,8 +426,6 @@ namespace krn
 
     void Physics::OnLoadCallback(const EngineCtx& ctx, Scene&, Registry& reg)
     {
-        m_ActiveTransforms = &ctx.transforms;
-
         // Process already loaded Rigidbodies before Colliders, so a Collider deserialized
         // alongside a Rigidbody always finds its body already created
         reg.View<Rigidbody>().ForEach([this, &reg] (Entity e, Rigidbody& rb) -> void
@@ -456,8 +454,6 @@ namespace krn
             {
                 OnRigidbodyDestroyed(reg, e, rb);
             });
-
-        m_ActiveTransforms = nullptr;
     }
 
     void Physics::OnRigidbodyConstructed(Registry& reg, Entity e, Rigidbody& rb)
@@ -467,8 +463,7 @@ namespace krn
 
         if (reg.Has<Transform>(e))
         {
-            if (m_ActiveTransforms != nullptr)
-                m_ActiveTransforms->Ensure(reg, e);
+            m_Transforms.Ensure(reg, e);
 
             const Transform& t = reg.Get<Transform>(e);
 
