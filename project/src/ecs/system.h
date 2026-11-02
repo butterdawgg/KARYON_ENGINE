@@ -39,19 +39,10 @@ namespace krn
 
         public:
 
-        SystemManager(SceneManager& sceneManager) : m_SceneManager(sceneManager)
+        SystemManager(SceneManager& scenes)
         {
-            m_SceneManager.AddSystemsLoadCallback(
-                [this] (const EngineCtx& ctx, Scene& scene, Registry& reg)
-                {
-                    OnLoadCallback(ctx, reg);
-                });
-
-            m_SceneManager.AddSystemsUnloadCallback(
-                [this] (const EngineCtx& ctx, Scene& scene, Registry& reg)
-                {
-                    OnUnloadCallback(ctx, reg);
-                });
+            scenes.OnLoad.Connect<&SystemManager::OnLoad>(*this);
+            scenes.OnUnload.Connect<&SystemManager::OnUnload>(*this);
         };
 
         ~SystemManager() = default;
@@ -120,7 +111,7 @@ namespace krn
         }
 
         // Called by the SceneManager on scene load
-        void OnLoadCallback(const EngineCtx& ctx, Registry& reg)
+        void OnLoad(const EngineCtx& ctx, Scene&, Registry& reg)
         {
             for (auto& [system, _] : m_Systems)
             {
@@ -129,7 +120,7 @@ namespace krn
         }
 
         // Called by the SceneManager on scene unload
-        void OnUnloadCallback(const EngineCtx& ctx, Registry& reg)
+        void OnUnload(const EngineCtx& ctx, Scene&, Registry& reg)
         {
             for (auto& [system, _] : m_Systems)
             {
@@ -157,8 +148,6 @@ namespace krn
 
         // Stored as { system ptr, execution order }
         std::vector<SystemEntry> m_Systems { };
-
-        SceneManager& m_SceneManager;
     };
 }
 

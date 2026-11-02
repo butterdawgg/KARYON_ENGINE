@@ -138,10 +138,12 @@ namespace krn
         // ----------------------------
 
         // Called by the SceneManager on scene load
-        void OnLoadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path>& resToLoad);
+        void OnResourceLoad(const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path>& resToLoad);
 
         // Called by the SceneManager on scene unload
-        void OnUnloadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg);
+        void OnUnload(const EngineCtx& ctx, Scene& scene, Registry& reg);
+
+        void InitBGFX();
 
         // Creates the shared shader program, uniforms and default textures
         void InitPermanentResources(const fs::path& shaderDir);

@@ -193,42 +193,12 @@ namespace krn
         m_Window(window),
         m_Scenes(scenes)
     {
-        // Init bgfx
-        bgfx::PlatformData platformData { };
-        platformData.nwh = window.GetNativeHandle();
-        platformData.ndt = window.GetNativeDisplay();
-
-        const WindowSize size { window.GetSizeInPixels() };
-
-        bgfx::Init init { };
-        init.type = bgfx::RendererType::Count; // let bgfx pick the best backend for this platform
-        init.resolution.width = static_cast<uint32_t>(size.width);
-        init.resolution.height = static_cast<uint32_t>(size.height);
-        init.resolution.reset = BGFX_RESET_VSYNC;
-        init.platformData = platformData;
-
-        if (!bgfx::init(init))
-        {
-            throw std::runtime_error("bgfx::init failed");
-        }
-
-        bgfx::setViewClear(MAIN_VIEW_ID, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x303030ff, 1.0f, 0);
-        bgfx::setViewRect(MAIN_VIEW_ID, 0, 0, static_cast<uint16_t>(size.width), static_cast<uint16_t>(size.height));
+        InitBGFX();
 
         InitPermanentResources(dataPath / "shaders" / "bin");
 
-        // Add OnLoad/OnUnload callbacks
-        scenes.AddInternalLoadCallback(
-            [this] (const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path>& resToLoad)
-            {
-                OnLoadCallback(ctx, scene, reg, resToLoad);
-            });
-
-        scenes.AddInternalUnloadCallback(
-            [this] (const EngineCtx& ctx, Scene& scene, Registry& reg)
-            {
-                OnUnloadCallback(ctx, scene, reg);
-            });
+        scenes.OnResourceLoad.Connect<&Renderer::OnResourceLoad>(*this);
+        scenes.OnUnload.Connect<&Renderer::OnUnload>(*this);
     }
 
 
@@ -472,7 +442,7 @@ namespace krn
     // --- Resource management ---
     // ---------------------------
 
-    void Renderer::OnLoadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path>& resToLoad)
+    void Renderer::OnResourceLoad(const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path>& resToLoad)
     {
         auto gltfData { LoadGLTF(resToLoad) };
 
@@ -491,9 +461,34 @@ namespace krn
         PreprocessModels(result, reg, ctx, cache);
     }
 
-    void Renderer::OnUnloadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg)
+    void Renderer::OnUnload(const EngineCtx& ctx, Scene& scene, Registry& reg)
     {
         DestroySceneResources(reg);
+    }
+
+    void Renderer::InitBGFX()
+    {
+        // Init bgfx
+        bgfx::PlatformData platformData { };
+        platformData.nwh = m_Window.GetNativeHandle();
+        platformData.ndt = m_Window.GetNativeDisplay();
+
+        const WindowSize size { m_Window.GetSizeInPixels() };
+
+        bgfx::Init init { };
+        init.type = bgfx::RendererType::Count; // let bgfx pick the best backend for this platform
+        init.resolution.width = static_cast<uint32_t>(size.width);
+        init.resolution.height = static_cast<uint32_t>(size.height);
+        init.resolution.reset = BGFX_RESET_VSYNC;
+        init.platformData = platformData;
+
+        if (!bgfx::init(init))
+        {
+            throw std::runtime_error("bgfx::init failed");
+        }
+
+        bgfx::setViewClear(MAIN_VIEW_ID, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x303030ff, 1.0f, 0);
+        bgfx::setViewRect(MAIN_VIEW_ID, 0, 0, static_cast<uint16_t>(size.width), static_cast<uint16_t>(size.height));
     }
 
     void Renderer::InitPermanentResources(const fs::path& shaderDir)

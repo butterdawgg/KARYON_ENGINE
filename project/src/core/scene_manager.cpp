@@ -18,37 +18,6 @@ namespace krn
     void SceneManager::Update(const EngineCtx& ctx)
     {
         // Helper lambdas
-        auto clearLoadMetadata = [] (Registry& reg) -> void
-            {
-                reg.Clear<LoadMetadata>();
-            };
-
-        auto onSystemsLoad = [&] () -> void
-            {
-                for (auto& func : m_SystemsLoadCallbacks)
-                {
-                    func(ctx, *m_CurrentScene, m_CurrentScene->GetReg());
-                }
-            };
-
-        auto onInternalUnload = [&] () -> void
-            {
-                for (auto& func : m_InternalUnloadCallbacks)
-                {
-                    func(ctx, *m_CurrentScene, m_CurrentScene->GetReg());
-
-                    clearLoadMetadata(m_CurrentScene->GetReg());
-                }
-            };
-
-        auto onSystemsUnload = [&] () -> void
-            {
-                for (auto& func : m_SystemsUnloadCallbacks)
-                {
-                    func(ctx, *m_CurrentScene, m_CurrentScene->GetReg());
-                }
-            };
-
         auto unloadCurrentScene =
             [&] (bool checkScheduledToUnload) -> void
             {
@@ -58,8 +27,7 @@ namespace krn
                 if (checkScheduledToUnload && !m_CurrentScene->m_ScheduledToUnload)
                     return;
 
-                onInternalUnload();
-                onSystemsUnload();
+                OnUnload.Emit(ctx, *m_CurrentScene, m_CurrentScene->GetReg());
 
                 m_CurrentScene.reset();
             };
@@ -90,7 +58,7 @@ namespace krn
             popAllScheduled(); // multiple scenes aren't supported yet
 
             if (m_CurrentScene != nullptr)
-                onSystemsLoad();
+                OnLoad.Emit(ctx, *m_CurrentScene, m_CurrentScene->GetReg());
         }
     }
 
@@ -124,32 +92,12 @@ namespace krn
             }
         }
 
-        // Execute internal load callbacks
-        for (auto& callback : m_InternalLoadCallbacks)
-        {
-            callback(ctx, *newScene, reg, sceneDesc->resourcesToLoad);
-        }
+        // Execute load callbacks
+        OnResourceLoad.Emit(ctx, *newScene, reg, sceneDesc->resourcesToLoad);
+        OnPreprocess.Emit(ctx, *newScene, reg);
+
+        reg.Clear<LoadMetadata>();
 
         return newScene;
-    }
-
-    void SceneManager::AddInternalLoadCallback(const InternalLoadCallback& func)
-    {
-        m_InternalLoadCallbacks.push_back(func);
-    }
-
-    void SceneManager::AddInternalUnloadCallback(const InternalUnloadCallback& func)
-    {
-        m_InternalUnloadCallbacks.push_back(func);
-    }
-
-    void SceneManager::AddSystemsLoadCallback(const SystemsLoadCallback& func)
-    {
-        m_SystemsLoadCallbacks.push_back(func);
-    }
-
-    void SceneManager::AddSystemsUnloadCallback(const SystemsUnloadCallback& func)
-    {
-        m_SystemsUnloadCallbacks.push_back(func);
     }
 }

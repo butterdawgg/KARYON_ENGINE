@@ -3,6 +3,7 @@
 
 namespace krn
 {
+    class Engine;
     class Window;
     class EventManager;
     class InputManager;
