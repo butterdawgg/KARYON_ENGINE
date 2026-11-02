@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -14,7 +15,6 @@
 
 #include "window.h"
 #include "transform.h"
-#include "gpu_resources_handle.h"
 #include "rendering_datatypes.h"
 #include "camera.h"
 #include "model.h"
@@ -32,14 +32,6 @@ namespace krn
     struct EngineCtx;
 
     // GPU-side data
-    struct MeshGPU
-    {
-        bgfx::VertexBufferHandle vbh { bgfx::kInvalidHandle };
-        bgfx::IndexBufferHandle ibh { bgfx::kInvalidHandle };
-        std::vector<size_t> primitives { };
-        std::vector<uint32_t> materials { };
-    };
-
     struct MaterialGPU
     {
         glm::vec4 albedo { 1.0f, 1.0f, 1.0f, 1.0f };
@@ -50,16 +42,6 @@ namespace krn
         bgfx::TextureHandle normalTex { bgfx::kInvalidHandle };
         bgfx::TextureHandle metallicRoughnessTex { bgfx::kInvalidHandle };
         bgfx::TextureHandle emissiveTex { bgfx::kInvalidHandle };
-    };
-
-    // Every GPU resource one loaded scene's meshes/materials own
-    struct GPU_Resources
-    {
-        std::vector<MeshGPU> meshes;
-        std::vector<MaterialGPU> materials;
-
-        // Deduplicated by resolved path
-        std::unordered_map<std::string, bgfx::TextureHandle> textureCache;
     };
 
     // Output of loading a gltf scene file
@@ -97,6 +79,23 @@ namespace krn
         std::unordered_map<fs::path, size_t> pathToFileId;
     };
 
+    // GPU buffers of one gltf mesh
+    struct MeshBuffers
+    {
+        bgfx::VertexBufferHandle vbh { bgfx::kInvalidHandle };
+        bgfx::IndexBufferHandle ibh { bgfx::kInvalidHandle };
+    };
+
+    // What one scene load already uploaded, indexed [fileId][meshId/materialId].
+    // Gltf meshes/materials are uploaded on first use by a Model, so nothing
+    // ends up on the GPU without a Model referencing it (and freeing it on unload).
+    struct GLTF_UploadCache
+    {
+        std::vector<std::vector<std::optional<MeshBuffers>>> fileMeshes { };
+        std::vector<std::vector<std::optional<uint32_t>>> fileMaterialIds { };
+        std::optional<uint32_t> defaultMaterialId { };
+    };
+
     // Forward PBR renderer: one directional light with cascaded shadow maps,
     // up to MAX_POINT_LIGHTS point lights each with an omnidirectional cube
     // shadow map
@@ -128,8 +127,7 @@ namespace krn
         void DrawEmptyFrame();
         void DrawFrame(EngineCtx& ctx, Scene& scene, Registry& reg);
 
-        MeshGPU& GetMesh(Scene& scene, MeshHandle handle);
-        MaterialGPU& GetMaterial(Scene& scene, uint32_t id);
+        MaterialGPU& GetMaterial(uint32_t id);
 
 
 
@@ -148,24 +146,18 @@ namespace krn
         // Creates the shared shader program, uniforms and default textures
         void InitPermanentResources(const fs::path& shaderDir);
 
-        // Allocates a fresh GPU_Resources slot for a newly-loaded scene
-        GPU_ResourcesHandle CreateSceneResources();
+        // Frees the buffers/materials of every Model in reg and removes the
+        // Models; reg is one scene's registry, so only that scene's resources go
+        void DestroySceneResources(Registry& reg);
 
-        // Destroys every mesh/material/texture in a scene's GPU_Resources
-        // and frees the slot; called on scene unload
-        void DestroySceneResources(GPU_ResourcesHandle handle);
+        // Creates a mesh's vertex/index buffers
+        MeshBuffers UploadMesh(const MeshDesc& data);
 
-        // Checks if handle is valid and not stale
-        bool IsHandleValid(GPU_ResourcesHandle handle) const;
+        // Builds one MaterialGPU in the material pool and returns its id
+        uint32_t UploadMaterial(const MaterialDesc& desc);
 
-        // Access GPU_Resources by handle
-        GPU_Resources& GetSceneResources(GPU_ResourcesHandle handle);
-
-        // Builds a MeshGPU and adds it to resources
-        MeshHandle UploadMesh(GPU_Resources& resources, const MeshDesc& data);
-
-        // Builds one MaterialGPU and adds it to resources
-        uint32_t UploadMaterial(GPU_Resources& resources, const MaterialDesc& desc);
+        // Returns a material's pool slot and releases its textures
+        void FreeMaterial(uint32_t id);
 
 
 
@@ -179,11 +171,14 @@ namespace krn
             glm::vec4(&pointPos)[MAX_POINT_LIGHTS], glm::vec4(&pointColor)[MAX_POINT_LIGHTS],
             std::size_t& activePointLightCount) const;
 
-        // Loads one texture from a file
-        bgfx::TextureHandle LoadTexture(GPU_Resources& resources, const fs::path& path) const;
+        // Loads one texture from a file (or the cache) and takes a reference to it
+        bgfx::TextureHandle LoadTexture(const fs::path& path);
+
+        // Drops a reference taken by LoadTexture, destroying the texture on the last one
+        void ReleaseTexture(bgfx::TextureHandle handle);
 
         // Binds a material's textures/uniforms for the next bgfx::submit()
-        void BindMaterial(const GPU_Resources& resources, uint32_t materialIndex) const;
+        void BindMaterial(uint32_t materialIndex) const;
 
         // Binds the uniforms every draw call this frame needs
         void BindGlobalUniforms(const glm::vec4& camPos, const glm::vec4& ambient,
@@ -194,7 +189,7 @@ namespace krn
         void BindShadowUniforms() const;
 
         // Walks every visible Model's every primitive
-        void DrawPrimitives(EngineCtx& ctx, Registry& reg, GPU_Resources& resources,
+        void DrawPrimitives(EngineCtx& ctx, Registry& reg,
             const std::function<void(uint32_t materialIndex)>& onPrimitive);
 
 
@@ -207,16 +202,21 @@ namespace krn
         std::optional<GLTF_LoadResult> LoadGLTF(const std::vector<fs::path>& files);
 
         // Processes a GLTF_LoadResult according to LoadMetadata and ModelDesc
-        void PreprocessModels(GLTF_LoadResult& result, Registry& reg, const EngineCtx& ctx, GPU_Resources& res,
-            const std::vector<std::vector<uint32_t>>& fileMaterialIds,
-            const std::vector<std::vector<MeshHandle>>& fileMeshHandles);
+        void PreprocessModels(GLTF_LoadResult& result, Registry& reg, const EngineCtx& ctx, GLTF_UploadCache& cache);
 
         // Recursive helper function to load a GLTF node
-        // meshHandles is the owning file's slice of fileMeshHandles,
-        // already resolved to global MeshHandles
         void LoadGLTFNode(const EngineCtx& ctx, Entity entity, LoadMetadata& metadata,
-            Registry& reg, GLTF_LoadResult::File& file, GLTF_LoadResult::File::Node& node,
-            uint32_t nodeId, bool hasEntity, bool loadChildren, const std::vector<MeshHandle>& meshHandles);
+            Registry& reg, GLTF_LoadResult::File& file, std::size_t fileId, GLTF_LoadResult::File::Node& node,
+            uint32_t nodeId, bool hasEntity, bool loadChildren, GLTF_UploadCache& cache);
+
+        // Points model at a gltf mesh's buffers (uploaded on first use). Primitive i
+        // uses materialOverrides[min(i, size - 1)] if any are given, else its own gltf material
+        void SetModelMesh(Model& model, GLTF_UploadCache& cache, const GLTF_LoadResult::File& file,
+            std::size_t fileId, std::size_t meshId, const std::vector<uint32_t>& materialOverrides = { });
+
+        // Returns the pool id of a gltf material (NO_GLTF_MATERIAL = default material), uploading it on first use
+        uint32_t GetGLTFMaterial(GLTF_UploadCache& cache, const GLTF_LoadResult::File& file,
+            std::size_t fileId, uint32_t materialId);
 
 
         // ---------------
@@ -226,10 +226,22 @@ namespace krn
         fs::path m_DataPath;
 
         Window& m_Window;
+        SceneManager& m_Scenes;
 
-        std::vector<GPU_Resources> m_SceneResources;
-        std::vector<uint32_t> m_Generations;
-        std::vector<uint32_t> m_FreeSlots;
+        // Material pool shared by all scenes, Primitives refer to it by id
+        std::vector<MaterialGPU> m_Materials;
+        std::vector<uint32_t> m_FreeMaterialIds;
+
+        // Loaded textures, deduplicated by resolved path and refcounted per
+        // referencing material. m_TextureRefs is indexed by TextureHandle::idx
+        struct TextureRef
+        {
+            std::string path { };
+            uint32_t count { 0 };
+        };
+
+        std::unordered_map<std::string, bgfx::TextureHandle> m_TextureCache;
+        std::vector<TextureRef> m_TextureRefs;
 
         bgfx::ProgramHandle m_PBRProgram { bgfx::kInvalidHandle };
         bgfx::ProgramHandle m_ShadowCasterProgram { bgfx::kInvalidHandle };

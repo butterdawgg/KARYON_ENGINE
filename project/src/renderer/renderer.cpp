@@ -190,7 +190,8 @@ namespace krn
 
     Renderer::Renderer(Window& window, SceneManager& scenes, const fs::path& dataPath) :
         m_DataPath(dataPath),
-        m_Window(window)
+        m_Window(window),
+        m_Scenes(scenes)
     {
         // Init bgfx
         bgfx::PlatformData platformData { };
@@ -268,16 +269,9 @@ namespace krn
         bgfx::destroy(m_ShadowCasterProgram);
         bgfx::destroy(m_PointShadowCasterProgram);
 
-        // Release every scene's GPU resources while bgfx is still up
-        for (uint32_t i = 0; i < m_SceneResources.size(); ++i)
-        {
-            const bool isFree { std::find(m_FreeSlots.begin(), m_FreeSlots.end(), i) != m_FreeSlots.end() };
-
-            if (isFree)
-                continue;
-
-            DestroySceneResources(GPU_ResourcesHandle { i, m_Generations[i] });
-        }
+        // The current scene outlives the Renderer, so release its GPU resources while bgfx is still up
+        if (Scene* scene { m_Scenes.GetCurrentScene() })
+            DestroySceneResources(scene->GetReg());
 
         bgfx::destroy(m_DefaultAlbedo);
         bgfx::destroy(m_DefaultNormal);
@@ -356,8 +350,6 @@ namespace krn
 
         GatherLights(ctx, scene, reg, dirDir, dirColor, pointPos, pointColor, activePointLightCount);
 
-        GPU_Resources& resources { GetSceneResources(scene.GetResourcesHandle()) };
-
         constexpr std::uint64_t SHADOW_CASTER_STATE { BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A
             | BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS };
 
@@ -379,7 +371,7 @@ namespace krn
             bgfx::setViewRect(vid, 0, 0, SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
             bgfx::setViewTransform(vid, m_ShadowMap.lightView, m_ShadowMap.lightProj[c]);
 
-            DrawPrimitives(ctx, reg, resources, [&] (uint32_t)
+            DrawPrimitives(ctx, reg, [&] (uint32_t)
                 {
                     bgfx::setState(SHADOW_CASTER_STATE);
                     bgfx::submit(vid, m_ShadowCasterProgram);
@@ -405,7 +397,7 @@ namespace krn
                 bgfx::setViewRect(vid, 0, 0, POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE);
                 bgfx::setViewTransform(vid, pointView, pointProj);
 
-                DrawPrimitives(ctx, reg, resources, [&] (uint32_t)
+                DrawPrimitives(ctx, reg, [&] (uint32_t)
                     {
                         bgfx::setUniform(u_lightOrigin, &origin);
                         bgfx::setState(SHADOW_CASTER_STATE);
@@ -422,10 +414,10 @@ namespace krn
         constexpr std::uint64_t STATE { BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_WRITE_Z
             | BGFX_STATE_DEPTH_TEST_LESS | BGFX_STATE_MSAA };
 
-        DrawPrimitives(ctx, reg, resources, [&] (uint32_t matId)
+        DrawPrimitives(ctx, reg, [&] (uint32_t matId)
             {
                 BindGlobalUniforms(camPos, ambient, dirDir, dirColor, pointPos, pointColor);
-                BindMaterial(resources, matId);
+                BindMaterial(matId);
                 BindShadowUniforms();
 
                 bgfx::setState(STATE);
@@ -436,7 +428,7 @@ namespace krn
         bgfx::frame();
     }
 
-    void Renderer::DrawPrimitives(EngineCtx& ctx, Registry& reg, GPU_Resources& resources,
+    void Renderer::DrawPrimitives(EngineCtx& ctx, Registry& reg,
         const std::function<void(uint32_t materialIndex)>& onPrimitive)
     {
         auto models = reg.View<Model>();
@@ -448,56 +440,30 @@ namespace krn
         {
             const Entity entity { entities[i++] };
 
-            if (model.meshHandle == INVALID_MESH || model.forceRenderingOff)
+            if (!bgfx::isValid(model.vbh) || model.forceRenderingOff)
                 continue;
-
-            const MeshGPU& mesh { resources.meshes[model.meshHandle] };
 
             ctx.transforms.Ensure(reg, entity);
 
             const glm::mat4 worldMat { reg.Get<Transform>(entity).GetWorldMatrix() };
 
-            for (size_t start = 0, primitiveId = 0; primitiveId < mesh.primitives.size(); ++primitiveId)
+            for (const Primitive& primitive : model.primitives)
             {
-                if (primitiveId >= mesh.materials.size())
-                {
-                    logWarning("Model on entity {} is missing a material for primitive {}, skipping",
-                        entity, primitiveId);
-
-                    continue;
-                }
-
-                const size_t count { mesh.primitives[primitiveId] };
-                const uint32_t matId { mesh.materials[primitiveId] };
-
                 bgfx::setTransform(glm::value_ptr(worldMat));
 
-                bgfx::setVertexBuffer(0, mesh.vbh);
-                bgfx::setIndexBuffer(mesh.ibh, start, count);
+                bgfx::setVertexBuffer(0, model.vbh);
+                bgfx::setIndexBuffer(model.ibh, primitive.indexStart, primitive.indexCount);
 
-                onPrimitive(matId);
-
-                start += count;
+                onPrimitive(primitive.materialId);
             }
         }
     }
 
-    MeshGPU& Renderer::GetMesh(Scene& scene, MeshHandle handle)
+    MaterialGPU& Renderer::GetMaterial(uint32_t id)
     {
-        auto& res { GetSceneResources(scene.GetResourcesHandle()) };
+        assert(id < m_Materials.size() && "tried to access invalid material by id");
 
-        assert(handle < res.meshes.size() && "tried to access invalid mesh handle");
-
-        return res.meshes[handle];
-    }
-
-    MaterialGPU& Renderer::GetMaterial(Scene& scene, uint32_t id)
-    {
-        auto& res { GetSceneResources(scene.GetResourcesHandle()) };
-
-        assert(id < res.materials.size() && "tried to access invalid material by id");
-
-        return res.materials[id];
+        return m_Materials[id];
     }
 
 
@@ -510,63 +476,24 @@ namespace krn
     {
         auto gltfData { LoadGLTF(resToLoad) };
 
-        // Create resources handle and give it to the scene
-        const GPU_ResourcesHandle handle { CreateSceneResources() };
-        scene.SetResourcesHandle(handle);
-
-        GPU_Resources& res { GetSceneResources(handle) };
-
         GLTF_LoadResult result { gltfData.has_value() ? std::move(*gltfData) : GLTF_LoadResult { } };
 
-        std::optional<uint32_t> defaultMaterialId { };
-
-        std::vector<std::vector<uint32_t>> fileMaterialIds(result.files.size());
-        std::vector<std::vector<MeshHandle>> fileMeshHandles(result.files.size());
+        GLTF_UploadCache cache { };
+        cache.fileMeshes.resize(result.files.size());
+        cache.fileMaterialIds.resize(result.files.size());
 
         for (std::size_t f = 0; f < result.files.size(); ++f)
         {
-            GLTF_LoadResult::File& file { result.files[f] };
-
-            std::vector<uint32_t>& materialIds { fileMaterialIds[f] };
-            materialIds.reserve(file.materials.size());
-
-            for (const MaterialDesc& matDesc : file.materials)
-                materialIds.push_back(UploadMaterial(res, matDesc));
-
-            std::vector<MeshHandle>& meshHandles { fileMeshHandles[f] };
-            meshHandles.reserve(file.meshes.size());
-
-            for (const MeshDesc& meshDesc : file.meshes)
-            {
-                MeshDesc resolved { meshDesc };
-
-                for (uint32_t& matIdx : resolved.materials)
-                {
-                    if (matIdx == NO_GLTF_MATERIAL)
-                    {
-                        if (!defaultMaterialId.has_value())
-                            defaultMaterialId = UploadMaterial(res, MaterialDesc { });
-
-                        matIdx = *defaultMaterialId;
-                    }
-                    else
-                    {
-                        matIdx = materialIds[matIdx];
-                    }
-                }
-
-                meshHandles.push_back(UploadMesh(res, resolved));
-            }
+            cache.fileMeshes[f].resize(result.files[f].meshes.size());
+            cache.fileMaterialIds[f].resize(result.files[f].materials.size());
         }
 
-        PreprocessModels(result, reg, ctx, res, fileMaterialIds, fileMeshHandles);
+        PreprocessModels(result, reg, ctx, cache);
     }
 
     void Renderer::OnUnloadCallback(const EngineCtx& ctx, Scene& scene, Registry& reg)
     {
-        DestroySceneResources(scene.GetResourcesHandle());
-
-        scene.SetResourcesHandle(GPU_ResourcesHandle { });
+        DestroySceneResources(reg);
     }
 
     void Renderer::InitPermanentResources(const fs::path& shaderDir)
@@ -654,70 +581,55 @@ namespace krn
         u_pointLightColor = bgfx::createUniform("u_pointLightColor", bgfx::UniformType::Vec4, MAX_POINT_LIGHTS);
     }
 
-    GPU_ResourcesHandle Renderer::CreateSceneResources()
+    void Renderer::DestroySceneResources(Registry& reg)
     {
-        uint32_t index;
+        // Models created from the same gltf mesh/material share handles,
+        // so gather the unique ones first and free each exactly once
+        std::vector<uint16_t> vertexBuffers;
+        std::vector<uint16_t> indexBuffers;
+        std::vector<uint32_t> materialIds;
 
-        if (!m_FreeSlots.empty())
+        for (const Model& model : reg.View<Model>())
         {
-            index = m_FreeSlots.back();
-            m_FreeSlots.pop_back();
-        }
-        else
-        {
-            index = static_cast<uint32_t>(m_SceneResources.size());
-            m_SceneResources.emplace_back();
-            m_Generations.push_back(0);
+            if (bgfx::isValid(model.vbh))
+                vertexBuffers.push_back(model.vbh.idx);
+
+            if (bgfx::isValid(model.ibh))
+                indexBuffers.push_back(model.ibh.idx);
+
+            for (const Primitive& primitive : model.primitives)
+                materialIds.push_back(primitive.materialId);
         }
 
-        return GPU_ResourcesHandle { index, m_Generations[index] };
+        auto sortUnique = [] (auto& values)
+            {
+                std::ranges::sort(values);
+                values.erase(std::unique(values.begin(), values.end()), values.end());
+            };
+
+        sortUnique(vertexBuffers);
+        sortUnique(indexBuffers);
+        sortUnique(materialIds);
+
+        for (uint16_t idx : vertexBuffers)
+            bgfx::destroy(bgfx::VertexBufferHandle { idx });
+
+        for (uint16_t idx : indexBuffers)
+            bgfx::destroy(bgfx::IndexBufferHandle { idx });
+
+        for (uint32_t id : materialIds)
+            FreeMaterial(id);
+
+        reg.Clear<Model>();
     }
 
-    void Renderer::DestroySceneResources(GPU_ResourcesHandle handle)
-    {
-        if (!IsHandleValid(handle))
-        {
-            assert(false && "Renderer::DestroySceneResources called with an invalid or stale handle");
-
-            return;
-        }
-
-        GPU_Resources& resources { m_SceneResources[handle.index] };
-
-        for (MeshGPU& mesh : resources.meshes)
-        {
-            bgfx::destroy(mesh.vbh);
-            bgfx::destroy(mesh.ibh);
-        }
-
-        for (auto& [path, texHandle] : resources.textureCache)
-        {
-            bgfx::destroy(texHandle);
-        }
-
-        resources = GPU_Resources { };
-
-        ++m_Generations[handle.index];
-        m_FreeSlots.push_back(handle.index);
-    }
-
-    bool Renderer::IsHandleValid(GPU_ResourcesHandle handle) const
-    {
-        return handle.IsValid()
-            && handle.index < m_SceneResources.size()
-            && m_Generations[handle.index] == handle.generation;
-    }
-
-    GPU_Resources& Renderer::GetSceneResources(GPU_ResourcesHandle handle)
-    {
-        assert(IsHandleValid(handle) && "invalid or stale GPU_ResourcesHandle");
-
-        return m_SceneResources[handle.index];
-    }
-
-    MeshHandle Renderer::UploadMesh(GPU_Resources& resources, const MeshDesc& data)
+    MeshBuffers Renderer::UploadMesh(const MeshDesc& data)
     {
         static const bgfx::VertexLayout LAYOUT { MakeVertexLayout() };
+
+        // Every primitive got skipped while loading - nothing to draw
+        if (data.indices.empty())
+            return MeshBuffers { };
 
         const bgfx::Memory* vertexMem { bgfx::copy(data.vertices.data(),
             static_cast<uint32_t>(data.vertices.size() * sizeof(Vertex))) };
@@ -725,28 +637,14 @@ namespace krn
         const bgfx::Memory* indexMem { bgfx::copy(data.indices.data(),
             static_cast<uint32_t>(data.indices.size() * sizeof(uint32_t))) };
 
-        MeshGPU mesh;
-        mesh.vbh = bgfx::createVertexBuffer(vertexMem, LAYOUT);
-        mesh.ibh = bgfx::createIndexBuffer(indexMem, BGFX_BUFFER_INDEX32);
+        MeshBuffers buffers;
+        buffers.vbh = bgfx::createVertexBuffer(vertexMem, LAYOUT);
+        buffers.ibh = bgfx::createIndexBuffer(indexMem, BGFX_BUFFER_INDEX32);
 
-        if (data.primitives.empty())
-        {
-            mesh.primitives.push_back(data.indices.size());
-        }
-        else
-        {
-            mesh.primitives = data.primitives;
-        }
-
-        mesh.materials = data.materials;
-
-        const MeshHandle meshHandle { static_cast<MeshHandle>(resources.meshes.size()) };
-        resources.meshes.push_back(std::move(mesh));
-
-        return meshHandle;
+        return buffers;
     }
 
-    uint32_t Renderer::UploadMaterial(GPU_Resources& resources, const MaterialDesc& desc)
+    uint32_t Renderer::UploadMaterial(const MaterialDesc& desc)
     {
         MaterialGPU material;
         material.albedo = glm::vec4(desc.albedo, 1.0f);
@@ -754,21 +652,47 @@ namespace krn
         material.emissive = glm::vec4(desc.emissive, 0.0f);
 
         material.albedoTex = desc.albedoTexture.empty()
-            ? m_DefaultAlbedo : LoadTexture(resources, m_DataPath / desc.albedoTexture);
+            ? m_DefaultAlbedo : LoadTexture(m_DataPath / desc.albedoTexture);
 
         material.normalTex = desc.normalTexture.empty()
-            ? m_DefaultNormal : LoadTexture(resources, m_DataPath / desc.normalTexture);
+            ? m_DefaultNormal : LoadTexture(m_DataPath / desc.normalTexture);
 
         material.metallicRoughnessTex = desc.metallicRoughnessTexture.empty()
-            ? m_DefaultMetallicRoughness : LoadTexture(resources, m_DataPath / desc.metallicRoughnessTexture);
+            ? m_DefaultMetallicRoughness : LoadTexture(m_DataPath / desc.metallicRoughnessTexture);
 
         material.emissiveTex = desc.emissiveTexture.empty()
-            ? m_DefaultEmissive : LoadTexture(resources, m_DataPath / desc.emissiveTexture);
+            ? m_DefaultEmissive : LoadTexture(m_DataPath / desc.emissiveTexture);
 
-        const uint32_t materialIndex { static_cast<uint32_t>(resources.materials.size()) };
-        resources.materials.push_back(material);
+        if (!m_FreeMaterialIds.empty())
+        {
+            const uint32_t materialIndex { m_FreeMaterialIds.back() };
+            m_FreeMaterialIds.pop_back();
+
+            m_Materials[materialIndex] = material;
+
+            return materialIndex;
+        }
+
+        const uint32_t materialIndex { static_cast<uint32_t>(m_Materials.size()) };
+        m_Materials.push_back(material);
 
         return materialIndex;
+    }
+
+    void Renderer::FreeMaterial(uint32_t id)
+    {
+        assert(id < m_Materials.size() && "tried to free invalid material by id");
+
+        MaterialGPU& material { m_Materials[id] };
+
+        ReleaseTexture(material.albedoTex);
+        ReleaseTexture(material.normalTex);
+        ReleaseTexture(material.metallicRoughnessTex);
+        ReleaseTexture(material.emissiveTex);
+
+        material = MaterialGPU { };
+
+        m_FreeMaterialIds.push_back(id);
     }
 
 
@@ -847,14 +771,18 @@ namespace krn
             bgfx::setTexture(static_cast<uint8_t>(4 + NUM_CASCADES + i), s_pointShadowMap[i], m_PointShadow.colorCube[i]);
     }
 
-    bgfx::TextureHandle Renderer::LoadTexture(GPU_Resources& resources, const fs::path& path) const
+    bgfx::TextureHandle Renderer::LoadTexture(const fs::path& path)
     {
         const std::string key { path.string() };
 
-        auto it = resources.textureCache.find(key);
+        auto it = m_TextureCache.find(key);
 
-        if (it != resources.textureCache.end())
+        if (it != m_TextureCache.end())
+        {
+            ++m_TextureRefs[it->second.idx].count;
+
             return it->second;
+        }
 
         const std::vector<std::uint8_t> fileData { ReadFile(path) };
 
@@ -887,14 +815,36 @@ namespace krn
 
         bimg::imageFree(image);
 
-        resources.textureCache[key] = handle;
+        m_TextureCache[key] = handle;
+
+        if (handle.idx >= m_TextureRefs.size())
+            m_TextureRefs.resize(handle.idx + 1);
+
+        m_TextureRefs[handle.idx] = TextureRef { key, 1 };
 
         return handle;
     }
 
-    void Renderer::BindMaterial(const GPU_Resources& resources, uint32_t materialIndex) const
+    void Renderer::ReleaseTexture(bgfx::TextureHandle handle)
     {
-        const MaterialGPU& material { resources.materials[materialIndex] };
+        // Default/fallback textures never come out of the cache, so they have no refs
+        if (handle.idx >= m_TextureRefs.size() || m_TextureRefs[handle.idx].count == 0)
+            return;
+
+        TextureRef& ref { m_TextureRefs[handle.idx] };
+
+        if (--ref.count > 0)
+            return;
+
+        m_TextureCache.erase(ref.path);
+        bgfx::destroy(handle);
+
+        ref = TextureRef { };
+    }
+
+    void Renderer::BindMaterial(uint32_t materialIndex) const
+    {
+        const MaterialGPU& material { m_Materials[materialIndex] };
 
         bgfx::setUniform(u_baseColorFactor, &material.albedo);
         bgfx::setUniform(u_metallicRoughnessFactor, &material.metallicRoughness);
@@ -1187,9 +1137,7 @@ namespace krn
         return result.files.empty() ? std::nullopt : std::optional<GLTF_LoadResult>(std::move(result));
     }
 
-    void Renderer::PreprocessModels(GLTF_LoadResult& result, Registry& reg, const EngineCtx& ctx, GPU_Resources& res,
-        const std::vector<std::vector<uint32_t>>& fileMaterialIds,
-        const std::vector<std::vector<MeshHandle>>& fileMeshHandles)
+    void Renderer::PreprocessModels(GLTF_LoadResult& result, Registry& reg, const EngineCtx& ctx, GLTF_UploadCache& cache)
     {
         using GLTF_File = GLTF_LoadResult::File;
         using GLTF_Node = GLTF_File::Node;
@@ -1212,7 +1160,7 @@ namespace krn
                 }
 
                 GLTF_File& file { result.files[metaNode.loadedFileId] };
-                const std::vector<MeshHandle>& meshHandles { fileMeshHandles[metaNode.loadedFileId] };
+                const std::size_t fileId { metaNode.loadedFileId };
 
                 if (metaNode.name.empty())
                 {
@@ -1225,8 +1173,8 @@ namespace krn
                         if (node.parentNodeId != GLTF_Node::NO_INDEX) // skip non-root nodes
                             continue;
 
-                        LoadGLTFNode(ctx, entity, metadata, reg, file, node,
-                            static_cast<uint32_t>(i), true, metaNode.loadChildren, meshHandles);
+                        LoadGLTFNode(ctx, entity, metadata, reg, file, fileId, node,
+                            static_cast<uint32_t>(i), true, metaNode.loadChildren, cache);
                     }
                 }
                 else
@@ -1245,8 +1193,8 @@ namespace krn
                     size_t nodeId { it->second };
                     auto& node { file.nodes[nodeId] };
 
-                    LoadGLTFNode(ctx, entity, metadata, reg, file, node,
-                        static_cast<uint32_t>(nodeId), true, metaNode.loadChildren, meshHandles);
+                    LoadGLTFNode(ctx, entity, metadata, reg, file, fileId, node,
+                        static_cast<uint32_t>(nodeId), true, metaNode.loadChildren, cache);
                 }
             });
 
@@ -1281,15 +1229,7 @@ namespace krn
 
                 const std::size_t meshId { meshIt->second };
 
-                Model& model { reg.Has<Model>(entity) ? reg.Get<Model>(entity) : reg.Add<Model>(entity) };
-
-                if (modelDesc.gtlfMaterialName.empty() && modelDesc.materialDesc.empty())
-                {
-                    model.meshHandle = fileMeshHandles[fileId][meshId];
-
-                    return;
-                }
-
+                // Empty = keep the mesh's own gltf materials
                 std::vector<uint32_t> overrideIds;
 
                 if (!modelDesc.gtlfMaterialName.empty())
@@ -1305,30 +1245,26 @@ namespace krn
                         return;
                     }
 
-                    overrideIds.push_back(fileMaterialIds[fileId][matIt->second]);
+                    overrideIds.push_back(GetGLTFMaterial(cache, file, fileId,
+                        static_cast<uint32_t>(matIt->second)));
                 }
                 else
                 {
                     overrideIds.reserve(modelDesc.materialDesc.size());
 
                     for (const MaterialDesc& matDesc : modelDesc.materialDesc)
-                        overrideIds.push_back(UploadMaterial(res, matDesc));
+                        overrideIds.push_back(UploadMaterial(matDesc));
                 }
 
-                MeshDesc resolved { file.meshes[meshId] };
+                Model& model { reg.Has<Model>(entity) ? reg.Get<Model>(entity) : reg.Add<Model>(entity) };
 
-                for (std::size_t i = 0; i < resolved.materials.size(); ++i)
-                {
-                    resolved.materials[i] = overrideIds[std::min(i, overrideIds.size() - 1)];
-                }
-
-                model.meshHandle = UploadMesh(res, resolved);
+                SetModelMesh(model, cache, file, fileId, meshId, overrideIds);
             });
     }
 
     void Renderer::LoadGLTFNode(const EngineCtx& ctx, Entity entity, LoadMetadata& metadata,
-        Registry& reg, GLTF_LoadResult::File& file, GLTF_LoadResult::File::Node& node,
-        uint32_t nodeId, bool hasEntity, bool loadChildren, const std::vector<MeshHandle>& meshHandles)
+        Registry& reg, GLTF_LoadResult::File& file, std::size_t fileId, GLTF_LoadResult::File::Node& node,
+        uint32_t nodeId, bool hasEntity, bool loadChildren, GLTF_UploadCache& cache)
     {
         using GLTF_File = GLTF_LoadResult::File;
         using GLTF_Node = GLTF_File::Node;
@@ -1359,7 +1295,7 @@ namespace krn
         if (node.meshId != GLTF_Node::NO_INDEX)
         {
             Model& model { reg.Has<Model>(e) ? reg.Get<Model>(e) : reg.Add<Model>(e) };
-            model.meshHandle = meshHandles[node.meshId];
+            SetModelMesh(model, cache, file, fileId, node.meshId);
         }
 
         // Optionally load children nodes
@@ -1369,9 +1305,59 @@ namespace krn
             {
                 auto& childNode { file.nodes[childNodeId] };
 
-                LoadGLTFNode(ctx, e, md, reg, file, childNode,
-                    static_cast<uint32_t>(childNodeId), false, true, meshHandles);
+                LoadGLTFNode(ctx, e, md, reg, file, fileId, childNode,
+                    static_cast<uint32_t>(childNodeId), false, true, cache);
             }
         }
+    }
+
+    void Renderer::SetModelMesh(Model& model, GLTF_UploadCache& cache, const GLTF_LoadResult::File& file,
+        std::size_t fileId, std::size_t meshId, const std::vector<uint32_t>& materialOverrides)
+    {
+        const MeshDesc& desc { file.meshes[meshId] };
+
+        std::optional<MeshBuffers>& buffers { cache.fileMeshes[fileId][meshId] };
+
+        if (!buffers.has_value())
+            buffers = UploadMesh(desc);
+
+        model.vbh = buffers->vbh;
+        model.ibh = buffers->ibh;
+        model.primitives.clear();
+        model.primitives.reserve(desc.primitives.size());
+
+        uint32_t start { 0 };
+
+        for (std::size_t i = 0; i < desc.primitives.size(); ++i)
+        {
+            const uint32_t count { static_cast<uint32_t>(desc.primitives[i]) };
+
+            const uint32_t materialId { materialOverrides.empty()
+                ? GetGLTFMaterial(cache, file, fileId, desc.materials[i])
+                : materialOverrides[std::min(i, materialOverrides.size() - 1)] };
+
+            model.primitives.push_back(Primitive { start, count, materialId });
+
+            start += count;
+        }
+    }
+
+    uint32_t Renderer::GetGLTFMaterial(GLTF_UploadCache& cache, const GLTF_LoadResult::File& file,
+        std::size_t fileId, uint32_t materialId)
+    {
+        if (materialId == NO_GLTF_MATERIAL)
+        {
+            if (!cache.defaultMaterialId.has_value())
+                cache.defaultMaterialId = UploadMaterial(MaterialDesc { });
+
+            return *cache.defaultMaterialId;
+        }
+
+        std::optional<uint32_t>& cached { cache.fileMaterialIds[fileId][materialId] };
+
+        if (!cached.has_value())
+            cached = UploadMaterial(file.materials[materialId]);
+
+        return *cached;
     }
 }

@@ -8,7 +8,6 @@
 #include "parser.h"
 #include "registry.h"
 #include "engine_ctx.h"
-#include "gpu_resources_handle.h"
 
 
 
@@ -19,7 +18,6 @@ namespace krn
     class Scene final
     {
         friend class SceneManager;
-        friend class Renderer;
 
         public:
 
@@ -32,17 +30,12 @@ namespace krn
 
         Registry& GetReg() { return m_Registry; }
 
-        GPU_ResourcesHandle GetResourcesHandle() const { return m_ResourcesHandle; }
-
         private:
 
         Scene() = default;
 
-        void SetResourcesHandle(GPU_ResourcesHandle handle) { m_ResourcesHandle = handle; }
-
         Registry m_Registry { };
         bool m_ScheduledToUnload { false };
-        GPU_ResourcesHandle m_ResourcesHandle { };
     };
 
     class SceneManager final

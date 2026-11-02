@@ -3,9 +3,6 @@
 
 namespace krn
 {
-    using MeshHandle = std::uint32_t;
-    inline constexpr MeshHandle INVALID_MESH { static_cast<MeshHandle>(-1) };
-
     struct Vertex
     {
         glm::vec3 position;

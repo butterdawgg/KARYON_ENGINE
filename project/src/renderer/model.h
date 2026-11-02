@@ -1,6 +1,11 @@
 #ifndef MODEL_H
 #define MODEL_H
 
+#include <cstdint>
+#include <vector>
+
+#include <bgfx/bgfx.h>
+
 #include "rendering_datatypes.h"
 #include "serialization.h"
 
@@ -186,9 +191,22 @@ namespace krn
         }
     };
 
+    // One draw call: a range of the Model's index buffer drawn with one material
+    struct Primitive
+    {
+        std::uint32_t indexStart { 0 };
+        std::uint32_t indexCount { 0 };
+        std::uint32_t materialId { 0 }; // id into the Renderer's material pool
+    };
+
+    // Owns its GPU buffers: on scene unload the Renderer frees every Model's
+    // buffers/materials in that scene's registry. Models created from the
+    // same gltf mesh share buffers, so the Renderer deduplicates on free.
     struct Model
     {
-        MeshHandle meshHandle { INVALID_MESH };
+        bgfx::VertexBufferHandle vbh { bgfx::kInvalidHandle };
+        bgfx::IndexBufferHandle ibh { bgfx::kInvalidHandle };
+        std::vector<Primitive> primitives { };
         bool forceRenderingOff { false };
     };
 }
