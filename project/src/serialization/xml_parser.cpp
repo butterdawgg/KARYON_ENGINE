@@ -51,12 +51,7 @@ namespace krn
                     if (!(iss >> value))
                         break;
 
-                    fs::path resPath { value };
-
-                    if (fs::exists(resPath))
-                        resourcesToLoad.push_back(resPath);
-                    else
-                        logError("Resource with path '{}' does not exist", value);
+                    resourcesToLoad.push_back(fs::path { value });
                 }
             }
         }

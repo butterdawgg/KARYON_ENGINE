@@ -6,7 +6,7 @@
 
 #include <bgfx/bgfx.h>
 
-#include "rendering_datatypes.h"
+#include "loader.h"
 #include "serialization.h"
 
 namespace krn

@@ -124,15 +124,16 @@ disable_third_party_warnings(${bgfx_SOURCE_DIR})
 set(SOURCES
     "src/main.cpp"
     "src/core/engine.cpp"
-    "src/serialization/serialization.cpp"
     "src/core/scene_manager.cpp"
     "src/serialization/xml_parser.cpp"
     "src/renderer/renderer.cpp"
     "src/renderer/shadow_map.cpp"
     "src/core/window.cpp"
     "src/core/transform.cpp"
-    
- "src/temp/camera_movement.cpp" "src/core/input_manager.cpp")
+    "src/serialization/gltf_loader.cpp"
+    "src/core/input_manager.cpp"
+    "src/temp/camera_movement.cpp"
+)
 
 # Add executable
 add_executable(${PROJECT_NAME} ${SOURCES})

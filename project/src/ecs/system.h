@@ -54,7 +54,7 @@ namespace krn
 
         // Registers a system to receive engine notifications (like Update, FixedUpdate etc.)
         // executionOrder is the system priority (lower -> executed first)
-        void AddSystem(std::unique_ptr<System> system, int executionOrder)
+        void AddSystem(std::unique_ptr<System>&& system, int executionOrder)
         {
             m_Systems.emplace_back(std::move(system), executionOrder);
 

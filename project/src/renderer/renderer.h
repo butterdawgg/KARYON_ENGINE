@@ -15,7 +15,7 @@
 
 #include "window.h"
 #include "transform.h"
-#include "rendering_datatypes.h"
+#include "loader.h"
 #include "camera.h"
 #include "model.h"
 #include "lights.h"
@@ -42,41 +42,6 @@ namespace krn
         bgfx::TextureHandle normalTex { bgfx::kInvalidHandle };
         bgfx::TextureHandle metallicRoughnessTex { bgfx::kInvalidHandle };
         bgfx::TextureHandle emissiveTex { bgfx::kInvalidHandle };
-    };
-
-    // Output of loading a gltf scene file
-    struct GLTF_LoadResult
-    {
-        struct File
-        {
-            std::vector<MeshDesc> meshes { };
-            std::vector<MaterialDesc> materials { };
-
-            std::unordered_map<std::string, size_t> nameToMeshId { };
-            std::unordered_map<std::string, size_t> nameToMaterialId { };
-
-            struct Node
-            {
-                static constexpr std::size_t NO_INDEX { static_cast<std::size_t>(-1) };
-
-                std::size_t parentNodeId { NO_INDEX };
-                std::vector<size_t> childNodeIds { };
-
-                glm::vec3 position { };
-                glm::quat rotation { 1.0f, 0.0f, 0.0f, 0.0f };
-                glm::vec3 scale { 1.0f, 1.0f, 1.0f };
-
-                std::size_t meshId { NO_INDEX };
-                std::size_t materialId { NO_INDEX };
-            };
-
-            std::vector<Node> nodes { };
-
-            std::unordered_map<std::string, size_t> nameToNodeId;
-        };
-
-        std::vector<File> files;
-        std::unordered_map<fs::path, size_t> pathToFileId;
     };
 
     // GPU buffers of one gltf mesh
@@ -138,7 +103,7 @@ namespace krn
         // ----------------------------
 
         // Called by the SceneManager on scene load
-        void OnResourceLoad(const EngineCtx& ctx, Scene& scene, Registry& reg, std::vector<fs::path>& resToLoad);
+        void OnResourceLoad(const EngineCtx& ctx, Scene& scene, Registry& reg, LoadResult& result);
 
         // Called by the SceneManager on scene unload
         void OnUnload(const EngineCtx& ctx, Scene& scene, Registry& reg);
@@ -196,28 +161,25 @@ namespace krn
 
 
 
-        // --------------------
-        // --- GLTF loading ---
-        // --------------------
+        // -----------------------
+        // --- GLTF instancing ---
+        // -----------------------
 
-        // Loads scene data from a .gltf/.glb file
-        std::optional<GLTF_LoadResult> LoadGLTF(const std::vector<fs::path>& files);
-
-        // Processes a GLTF_LoadResult according to LoadMetadata and ModelDesc
-        void PreprocessModels(GLTF_LoadResult& result, Registry& reg, const EngineCtx& ctx, GLTF_UploadCache& cache);
+        // Processes a LoadResult according to LoadMetadata and ModelDesc
+        void PreprocessModels(LoadResult& result, Registry& reg, const EngineCtx& ctx, GLTF_UploadCache& cache);
 
         // Recursive helper function to load a GLTF node
-        void LoadGLTFNode(const EngineCtx& ctx, Entity entity, LoadMetadata& metadata,
-            Registry& reg, GLTF_LoadResult::File& file, std::size_t fileId, GLTF_LoadResult::File::Node& node,
+        void LoadGLTFNode(const EngineCtx& ctx, Entity entity, const std::vector<std::string>& excludedNodes,
+            Registry& reg, LoadResult::File& file, std::size_t fileId, LoadResult::File::Node& node,
             uint32_t nodeId, bool hasEntity, bool loadChildren, GLTF_UploadCache& cache);
 
         // Points model at a gltf mesh's buffers (uploaded on first use). Primitive i
         // uses materialOverrides[min(i, size - 1)] if any are given, else its own gltf material
-        void SetModelMesh(Model& model, GLTF_UploadCache& cache, const GLTF_LoadResult::File& file,
+        void SetModelMesh(Model& model, GLTF_UploadCache& cache, const LoadResult::File& file,
             std::size_t fileId, std::size_t meshId, const std::vector<uint32_t>& materialOverrides = { });
 
-        // Returns the pool id of a gltf material (NO_GLTF_MATERIAL = default material), uploading it on first use
-        uint32_t GetGLTFMaterial(GLTF_UploadCache& cache, const GLTF_LoadResult::File& file,
+        // Returns the pool id of a gltf material (MeshDesc::NO_MATERIAL = default material), uploading it on first use
+        uint32_t GetGLTFMaterial(GLTF_UploadCache& cache, const LoadResult::File& file,
             std::size_t fileId, uint32_t materialId);
 
 

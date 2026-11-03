@@ -13,11 +13,8 @@
 #include "engine.h"
 #include "event_manager.h"
 #include "input_manager.h"
-#include "xml_parser.h"
 #include "renderer.h"
 #include "scene_manager.h"
-#include "event_manager.h"
-#include "input_manager.h"
 #include "system.h"
 #include "window.h"
 #include "transform.h"
@@ -48,8 +45,7 @@ namespace krn
 
         m_Input = std::make_unique<InputManager>(*m_Events);
 
-        m_Scenes = std::make_unique<SceneManager>(
-            std::make_unique<XML_Parser>(), m_Settings.dataPath / "scenes");
+        m_Scenes = std::make_unique<SceneManager>(m_Settings.dataPath / "scenes");
 
         m_Renderer = std::make_unique<Renderer>(*m_Window, *m_Scenes, m_Settings.dataPath);
 
@@ -194,7 +190,7 @@ namespace krn
             return;
 
         // Update user systems
-        m_Systems->Update(ctx, scene->GetReg(), deltaTime);
+        m_Systems->FixedUpdate(ctx, scene->GetReg(), deltaTime);
     }
 
     void Engine::PollEvents()

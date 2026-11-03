@@ -3,6 +3,10 @@
 
 static void load(const krn::EngineCtx& ctx)
 {
+    ctx.scenes.AddParser<krn::XML_Parser>(".xml");
+    ctx.scenes.AddLoader<krn::GLTF_Loader>(".gltf");
+    ctx.scenes.AddLoader<krn::GLTF_Loader>(".glb");
+
     auto moveHandle = ctx.input.Bind<glm::vec3>(krn::Composite3D {
         krn::Key::W, krn::Key::S, krn::Key::A, krn::Key::D,
         krn::Key::Space, krn::Key::LeftCtrl }, "move");

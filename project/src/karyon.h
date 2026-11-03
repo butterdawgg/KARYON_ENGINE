@@ -14,5 +14,7 @@
 #include "serialization.h"
 #include "parser.h"
 #include "xml_parser.h"
+#include "loader.h"
+#include "gltf_loader.h"
 
 #endif // !KARYON_H

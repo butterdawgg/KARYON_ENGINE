@@ -26,14 +26,6 @@ namespace krn
     template<typename T>
     class Registrar
     {
-        public:
-
-        // Forces the compiler to actually instantiate/keep `reg` around instead of
-        // discarding it as an unused static — call this once from somewhere that's
-        // guaranteed to be linked in (e.g. from Component's own constructor, or
-        // from an explicit registration pass). See note below.
-        //static void Touch() { (void)reg; }
-
         private:
 
         static inline const struct Reg
