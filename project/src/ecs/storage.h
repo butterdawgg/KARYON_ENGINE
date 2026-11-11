@@ -1,12 +1,12 @@
 #ifndef STORAGE_H
 #define STORAGE_H
 
-#include <cassert>
 #include <vector>
 #include <type_traits>
 
 #include "entity.h"
 #include "signal.h"
+#include "utils.h"
 
 namespace krn
 {
@@ -28,7 +28,7 @@ namespace krn
         Component& Add(Entity e)
             requires std::is_default_constructible_v<Component>
         {
-            assert(!Contains(e) && "entity already has this component");
+            check(!Contains(e), "Entity already has this component");
 
             if (e >= m_Sparse.size())
             {
@@ -47,7 +47,7 @@ namespace krn
 
         Component& Push(Entity e, const Component& comp)
         {
-            assert(!Contains(e) && "entity already has this component");
+            check(!Contains(e), "Entity already has this component");
 
             if (e >= m_Sparse.size())
             {
@@ -66,7 +66,7 @@ namespace krn
 
         Component& Push(Entity e, Component&& comp)
         {
-            assert(!Contains(e) && "entity already has this component");
+            check(!Contains(e), "Entity already has this component");
 
             if (e >= m_Sparse.size())
             {
@@ -86,7 +86,7 @@ namespace krn
         template <typename... Args>
         Component& Emplace(Entity e, Args &&...args)
         {
-            assert(!Contains(e) && "entity already has this component");
+            check(!Contains(e), "Entity already has this component");
 
             if (e >= m_Sparse.size())
             {
@@ -105,7 +105,8 @@ namespace krn
 
         Component& Get(Entity e)
         {
-            assert(Contains(e) && "entity has no such component");
+            check(Contains(e), "Entity has no such component");
+
             return m_Data[m_Sparse[e]];
         }
 

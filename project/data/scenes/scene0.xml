@@ -22,7 +22,6 @@
 			</transform>
 		</entity>
 
-		<!-- Temporary: added to exercise/verify point light cube shadow maps -->
 		<entity>
 			<point_light>
 				<intensity>4</intensity>

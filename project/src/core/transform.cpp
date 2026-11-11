@@ -2,8 +2,6 @@
 
 #include "scene_manager.h"
 
-#include <cassert>
-
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace krn
@@ -16,18 +14,23 @@ namespace krn
 
     void TransformManager::SetParent(Registry& reg, Entity child, Entity parent, bool keepWorldTransform)
     {
-        assert(child != NULL_ENTITY && "cannot parent a null childEntity");
-        assert(child != parent && "an childEntity cannot be its own parent");
+        check(child != NULL_ENTITY, "Cannot parent a null child entity");
+        check(child != parent, "A child entity cannot be its own parent");
 
-        #ifndef NDEBUG
+        check(
+            [&] () -> bool
+            {
+                for (Entity a = parent; a != NULL_ENTITY;
+                    a = reg.Has<Hierarchy>(a) ? reg.Get<Hierarchy>(a).parent : NULL_ENTITY)
+                {
+                    if (a == child)
+                        return false;
+                }
 
-        for (Entity a = parent; a != NULL_ENTITY;
-            a = reg.Has<Hierarchy>(a) ? reg.Get<Hierarchy>(a).parent : NULL_ENTITY)
-        {
-            assert(a != child && "Hierarchy cycle detected");
-        }
-
-        #endif // !NDEBUG
+                return true;
+            },
+            "Hierarchy cycle detected"
+        );
 
         // Ensure both entities have a Transform component
         if (!reg.Has<Transform>(child))
@@ -181,8 +184,8 @@ namespace krn
             {
                 if (metadata.id != LoadMetadata::INVALID_ID)
                 {
-                    assert(idToEntity.find(metadata.id) == idToEntity.end()
-                        && "entity with this id already exists");
+                    check(idToEntity.find(metadata.id) == idToEntity.end(),
+                        "Entity with id '{}' already exists", metadata.id);
 
                     idToEntity[metadata.id] = entity;
                 }

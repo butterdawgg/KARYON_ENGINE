@@ -8,7 +8,6 @@
 #include <limits>
 #include <concepts>
 
-#include <cassert>
 #include <memory>
 #include <string_view>
 #include <utility>
@@ -399,11 +398,7 @@ namespace krn
         template<typename R>
         void Unbind(BindingHandle<R> handle)
         {
-            if (!IsHandleValid(handle))
-            {
-                assert(false && "InputManager::Unbind called with an invalid or stale handle");
-                return;
-            }
+            check(IsValidHandle(handle), "InputManager::Unbind called with an invalid or stale handle");
 
             m_Slots[handle.index].reset();
             ++m_Generations[handle.index];
@@ -479,7 +474,8 @@ namespace krn
         template<typename R>
         BoundInput<R>& GetBoundInput(BindingHandle<R> handle) const
         {
-            assert(IsHandleValid(handle) && "Stale or invalid BindingHandle used");
+            check(IsHandleValid(handle), "Stale or invalid BindingHandle used");
+
             return static_cast<BoundInput<R>&>(*m_Slots[handle.index]);
         }
 

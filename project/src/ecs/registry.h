@@ -139,10 +139,6 @@ namespace krn
 
         private:
 
-        // Lazily builds the Registry-level relay signal for a component type, wiring it to
-        // relay off the pool's own Storage<Component> signal (picked via sourceAccessor) the
-        // first time it's requested. Storage itself never learns Registry exists; it just gets
-        // one more subscriber like any other.
         template <typename Component>
         Signal<Registry&, Entity, Component&>& AssureRelay(
             std::unordered_map<TypeId, std::unique_ptr<BaseSignal>>& relays,

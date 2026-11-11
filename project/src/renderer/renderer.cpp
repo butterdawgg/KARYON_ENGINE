@@ -4,7 +4,6 @@
 #include "scene_manager.h"
 
 #include <algorithm>
-#include <cassert>
 #include <fstream>
 
 #include <glm/gtc/type_ptr.hpp>
@@ -358,7 +357,7 @@ namespace krn
 
     MaterialGPU& Renderer::GetMaterial(uint32_t id)
     {
-        assert(id < m_Materials.size() && "tried to access invalid material by id");
+        check(id < m_Materials.size(), "Tried to access invalid material by id");
 
         return m_Materials[id];
     }
@@ -601,7 +600,7 @@ namespace krn
 
     void Renderer::FreeMaterial(uint32_t id)
     {
-        assert(id < m_Materials.size() && "tried to free invalid material by id");
+        check(id < m_Materials.size(), "Tried to free invalid material by id");
 
         MaterialGPU& material { m_Materials[id] };
 

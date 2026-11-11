@@ -1,16 +1,17 @@
 #ifndef SERIALIZATION_H
 #define SERIALIZATION_H
 
-#include <cassert>
 #include <charconv>
 #include <concepts>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <type_traits>
 
 #include <glm/glm.hpp>
 
 #include "registry.h"
+#include "utils.h"
 
 namespace krn
 {
@@ -149,7 +150,7 @@ namespace krn
 
         void Set(ErasedPtr component, const std::string& value) const override
         {
-            assert(component.type == getTypeId<Component>() &&
+            check(component.type == getTypeId<Component>(),
                 "ErasedPtr type mismatch: SerializeManager handed the wrong component to this Parameter");
 
             Component* typed = static_cast<Component*>(component.ptr);
@@ -180,8 +181,8 @@ namespace krn
         template<typename FieldType>
         ComponentRegistration& Parameter(const std::string& name, FieldType Component::* member)
         {
-            assert(m_Fields.find(name) == m_Fields.end() &&
-                "parameter with this name is already registered for this component");
+            check(m_Fields.find(name) == m_Fields.end(),
+                "Parameter with this name is already registered for this component");
 
             m_Fields[name] = std::make_unique<krn::Parameter<Component, FieldType>>(member);
 
@@ -206,8 +207,8 @@ namespace krn
         template<Registrable Component>
         static ComponentRegistration<Component> RegisterComponent(const std::string& name)
         {
-            assert(m_ComponentTypes.find(name) == m_ComponentTypes.end() &&
-                "component with this name is already registered");
+            check(m_ComponentTypes.find(name) == m_ComponentTypes.end(),
+                "Component with this name is already registered");
 
             const TypeId typeId { getTypeId<Component>() };
 
@@ -224,11 +225,11 @@ namespace krn
             const std::vector<std::pair<std::string, std::string>>& rawFields)
         {
             auto typeIt = m_ComponentTypes.find(componentName);
-            assert(typeIt != m_ComponentTypes.end() && "unknown component name in markup");
+            check(typeIt != m_ComponentTypes.end(), "Unknown component name in markup");
 
             BaseComponentFactory& factory = *m_ComponentFactories.at(typeIt->second);
             ErasedPtr component = factory(reg, e);
-            assert(component.ptr != nullptr);
+            check(component.ptr != nullptr, "Component ptr was null!");
 
             auto fieldsIt = m_ComponentFields.find(componentName);
             if (fieldsIt == m_ComponentFields.end())
@@ -237,8 +238,8 @@ namespace krn
             for (const auto& [fieldName, rawValue] : rawFields)
             {
                 auto paramIt = fieldsIt->second.find(fieldName);
-                assert(paramIt != fieldsIt->second.end() &&
-                    "unknown parameter name in markup for this component");
+                check(paramIt != fieldsIt->second.end(),
+                    "Unknown parameter name in markup for this component");
 
                 paramIt->second->Set(component, rawValue);
             }
